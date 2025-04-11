@@ -1,0 +1,2002 @@
+#!/usr/bin/env python3
+# -- coding: utf-8 --
+
+import os
+import json
+import glob
+import re
+from multiprocessing import Pool, cpu_count
+import argparse
+
+################################################################################
+# 1. Helper Functions
+################################################################################
+
+def parse_date_time(date_str, time_str):
+    """Combine date and time (e.g., '07-JAN-2025 00:01:54')."""
+    return f"{date_str} {time_str}"
+
+def read_in_chunks(file_object, chunk_size=10000):
+    """Yield chunks (lists) of lines from the file."""
+    chunk = []
+    for line in file_object:
+        chunk.append(line)
+        if len(chunk) >= chunk_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+################################################################################
+# 2. parse_nmon_file (including TOP lines)
+################################################################################
+
+def parse_nmon_file(nmon_file):
+    """
+    Parses a .nmon file, extracting various statistics.
+    (See the original comments for details.)
+    """
+    cpu_data_by_tag = {}
+    lpar_data_by_tag = {}
+    proc_data_by_tag = {}
+    file_io_data_by_tag = {}
+    top_data_by_tag = {}
+    memnew_data_by_tag = {}
+    mem_data_by_tag = {}
+    net_data_by_tag  = {}
+    netpacket_data_by_tag = {}
+    zzzz_map = {}
+    node = None
+    fallback_date = None
+    net_header_parsed = False
+    net_columns = []
+    netpacket_header_parsed = False
+    netpacket_columns = []
+
+    # --- For DISK ---
+    diskread_header_parsed = False
+    diskread_header = []
+    diskread_data_by_tag = {}
+    diskwrite_header_parsed = False
+    diskwrite_header = []
+    diskwrite_data_by_tag = {}
+    diskbusy_header_parsed = False
+    diskbusy_header = []
+    diskbusy_data_by_tag = {}
+    diskwait_header_parsed = False
+    diskwait_header = []
+    diskwait_data_by_tag = {}
+
+    # --- For VG ---
+    vgread_header_parsed = False
+    vgread_header = []
+    vgread_data_by_tag = {}
+    vgwrite_header_parsed = False
+    vgwrite_header = []
+    vgwrite_data_by_tag = {}
+    vgbusy_header_parsed = False
+    vgbusy_header = []
+    vgbusy_data_by_tag = {}
+    vgsize_header_parsed = False
+    vgsize_header = []
+    vgsize_data_by_tag = {}
+
+    base_name = os.path.splitext(os.path.basename(nmon_file))[0]
+    file_io_header_parsed = False
+    file_io_columns = []
+
+    with open(nmon_file, 'r', encoding='utf-8') as f:
+        for chunk_lines in read_in_chunks(f):
+            for line in chunk_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(',')
+                key = parts[0]
+                # ZZZZ => timestamps
+                if key == 'ZZZZ' and len(parts) >= 4:
+                    tag = parts[1]
+                    time_str = parts[2]
+                    date_str = parts[3].strip()
+                    if not re.match(r'^\d{2}-[A-Z]{3}-\d{4}$', date_str.upper()):
+                        if fallback_date:
+                            date_str = fallback_date
+                    zzzz_map[tag] = parse_date_time(date_str, time_str)
+                    continue
+                # CPU_ALL
+                if key == 'CPU_ALL' and len(parts) > 1 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    try:
+                        cpu_data_by_tag[tag] = {
+                            'User%': float(parts[2]) if parts[2].strip() else 0.0,
+                            'Sys%':  float(parts[3]) if parts[3].strip() else 0.0,
+                            'Wait%': float(parts[4]) if parts[4].strip() else 0.0,
+                            'Idle%': float(parts[5]) if parts[5].strip() else 0.0
+                        }
+                    except:
+                        pass
+                    continue
+                # LPAR
+                if key == 'LPAR' and len(parts) > 1 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    try:
+                        physical_cpu = float(parts[2]) if parts[2].strip() else 0.0
+                        virtual_cpus = float(parts[3]) if parts[3].strip() else 0.0
+                        entitled     = float(parts[6]) if len(parts) > 6 and parts[6].strip() else 0.0
+                        lpar_data_by_tag[tag] = {
+                            'PhysicalCPU': physical_cpu,
+                            'VirtualCPUs': virtual_cpus,
+                            'Entitled':    entitled
+                        }
+                    except:
+                        pass
+                    continue
+                # PROC
+                if key == 'PROC' and len(parts) > 1 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    try:
+                        runnable_val = float(parts[2]) if parts[2].strip() else 0.0
+                        swap_in_val  = float(parts[3]) if parts[3].strip() else 0.0
+                        pswitch_val  = float(parts[4]) if parts[4].strip() else 0.0
+                        syscall_val  = float(parts[5]) if parts[5].strip() else 0.0
+                        read_val     = float(parts[6]) if parts[6].strip() else 0.0
+                        write_val    = float(parts[7]) if parts[7].strip() else 0.0
+                        fork_val     = float(parts[8]) if len(parts) > 8 and parts[8].strip() else 0.0
+                        exec_val     = float(parts[9]) if len(parts) > 9 and parts[9].strip() else 0.0
+                        proc_data_by_tag.setdefault(tag, {})
+                        proc_data_by_tag[tag].update({
+                            'Runnable': runnable_val,
+                            'Swap-in':  swap_in_val,
+                            'pswitch':  pswitch_val,
+                            'Syscall':  syscall_val,
+                            'Read':     read_val,
+                            'Write':    write_val,
+                            'fork':     fork_val,
+                            'exec':     exec_val
+                        })
+                    except:
+                        pass
+                    continue
+                # TOP
+                if key == 'TOP' and len(parts) > 2:
+                    possible_tag = parts[2]
+                    if possible_tag.startswith('T'):
+                        tag = possible_tag
+                        try:
+                            cpu_str = parts[3]  if len(parts) > 3 else "0"
+                            cmd_str = parts[13] if len(parts) > 13 else "?"
+                            cpu_val = 0.0
+                            if cpu_str.strip():
+                                cpu_val = float(cpu_str)
+                            top_data_by_tag.setdefault(tag, [])
+                            top_data_by_tag[tag].append({
+                                '%CPU': cpu_val,
+                                'Command': cmd_str
+                            })
+                        except:
+                            pass
+                    continue
+                # FILE => parse file I/O stats
+                if key == 'FILE':
+                    if (not file_io_header_parsed) and len(parts) > 2 and "File I/O" in parts[1]:
+                        file_io_columns = parts[2:]
+                        file_io_header_parsed = True
+                        continue
+                    if len(parts) > 1 and parts[1].startswith('T') and file_io_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, col_name in enumerate(file_io_columns):
+                            d[col_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        file_io_data_by_tag[tag] = d
+                    continue
+                # MEMNEW
+                if key == 'MEMNEW' and len(parts) > 1 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    try:
+                        memnew_data_by_tag[tag] = {
+                            'Process%': float(parts[2]) if parts[2].strip() else 0.0,
+                            'FScache%': float(parts[3]) if parts[3].strip() else 0.0,
+                            'System%':  float(parts[4]) if parts[4].strip() else 0.0,
+                            'Free%':    float(parts[5]) if parts[5].strip() else 0.0,
+                            'Pinned%':  float(parts[6]) if len(parts) > 6 and parts[6].strip() else 0.0,
+                            'User%':    float(parts[7]) if len(parts) > 7 and parts[7].strip() else 0.0
+                        }
+                    except:
+                        pass
+                    continue
+                # MEM => parse Real/Virtual used% (computed from free%)
+                if key == 'MEM' and len(parts) > 1 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    try:
+                        real_free_p = float(parts[2]) if parts[2].strip() else 0.0
+                        virt_free_p = float(parts[3]) if parts[3].strip() else 0.0
+                        real_used_p = 100.0 - real_free_p
+                        virt_used_p = 100.0 - virt_free_p
+                        mem_data_by_tag[tag] = {
+                            'Real_Used%':    real_used_p,
+                            'Virtual_Used%': virt_used_p
+                        }
+                    except:
+                        pass
+                    continue
+                # NET => parse read/write columns
+                if key == 'NET' and len(parts) > 2 and not parts[1].startswith('T'):
+                    if not net_header_parsed:
+                        net_columns = parts[2:]
+                        net_header_parsed = True
+                    continue
+                if key == 'NET' and len(parts) > 2 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    numeric_vals = []
+                    for x in parts[2:]:
+                        try:
+                            numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                        except:
+                            numeric_vals.append(0.0)
+                    d = {}
+                    for i, col_name in enumerate(net_columns):
+                        d[col_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                    net_data_by_tag[tag] = d
+                    continue
+                # NETPACKET => parse read/write packet columns
+                if key == 'NETPACKET' and len(parts) > 2 and not parts[1].startswith('T'):
+                    if not netpacket_header_parsed:
+                        netpacket_columns = parts[2:]
+                        netpacket_header_parsed = True
+                    continue
+                if key == 'NETPACKET' and len(parts) > 2 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    numeric_vals = []
+                    for x in parts[2:]:
+                        try:
+                            numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                        except:
+                            numeric_vals.append(0.0)
+                    d = {}
+                    for i, col_name in enumerate(netpacket_columns):
+                        d[col_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                    netpacket_data_by_tag[tag] = d
+                    continue
+                # AAA => NodeName, date
+                if key == 'AAA' and len(parts) > 2:
+                    somekey = parts[1]
+                    value = parts[2]
+                    if somekey == 'NodeName':
+                        node = value
+                    elif somekey == 'date':
+                        fallback_date = value
+                # -------------------------
+                # DISK READ
+                # -------------------------
+                if key == 'DISKREAD':
+                    if (not diskread_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        diskread_header = parts[2:]
+                        diskread_header_parsed = True
+                        continue
+                    if len(parts) > 2 and parts[1].startswith('T') and diskread_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, disk_name in enumerate(diskread_header):
+                            d[disk_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        diskread_data_by_tag[tag] = d
+                    continue
+                # DISKWRITE
+                if key == 'DISKWRITE':
+                    if (not diskwrite_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        diskwrite_header = parts[2:]
+                        diskwrite_header_parsed = True
+                        continue
+                    if len(parts) > 2 and parts[1].startswith('T') and diskwrite_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, disk_name in enumerate(diskwrite_header):
+                            d[disk_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        diskwrite_data_by_tag[tag] = d
+                    continue
+                # DISKBUSY
+                if key == 'DISKBUSY':
+                    if (not diskbusy_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        diskbusy_header = parts[2:]
+                        diskbusy_header_parsed = True
+                        continue
+                    if len(parts) > 2 and parts[1].startswith('T') and diskbusy_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, disk_name in enumerate(diskbusy_header):
+                            d[disk_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        diskbusy_data_by_tag[tag] = d
+                    continue
+                # DISKWAIT
+                if key == 'DISKWAIT':
+                    if (not diskwait_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        diskwait_header = parts[2:]
+                        diskwait_header_parsed = True
+                        continue
+                    if len(parts) > 2 and parts[1].startswith('T') and diskwait_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, disk_name in enumerate(diskwait_header):
+                            d[disk_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        diskwait_data_by_tag[tag] = d
+                    continue
+                # -------------------------
+                # VG READ
+                # -------------------------
+                if key == 'VGREAD':
+                    if (not vgread_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        vgread_header = parts[2:]
+                        vgread_header_parsed = True
+                        continue
+                    if len(parts) > 2 and parts[1].startswith('T') and vgread_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, vg_name in enumerate(vgread_header):
+                            d[vg_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        vgread_data_by_tag[tag] = d
+                    continue
+                # VGWRITE
+                if key == 'VGWRITE':
+                    if (not vgwrite_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        vgwrite_header = parts[2:]
+                        vgwrite_header_parsed = True
+                        continue
+                    if len(parts) > 2 and parts[1].startswith('T') and vgwrite_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, vg_name in enumerate(vgwrite_header):
+                            d[vg_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        vgwrite_data_by_tag[tag] = d
+                    continue
+                # VGBUSY
+                if key == 'VGBUSY':
+                    if (not vgbusy_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        vgbusy_header = parts[2:]
+                        vgbusy_header_parsed = True
+                        continue
+                    if len(parts) > 2 and parts[1].startswith('T') and vgbusy_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, vg_name in enumerate(vgbusy_header):
+                            d[vg_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        vgbusy_data_by_tag[tag] = d
+                    continue
+                # VG SIZE
+                if key == 'VGSIZE':
+                    if (not vgsize_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        vgsize_header = parts[2:]
+                        vgsize_header_parsed = True
+                        continue
+                    if len(parts) > 2 and parts[1].startswith('T') and vgsize_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, vg_name in enumerate(vgsize_header):
+                            d[vg_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        vgsize_data_by_tag[tag] = d
+                    continue
+
+    if not node:
+        node = base_name
+    return (
+        cpu_data_by_tag,
+        lpar_data_by_tag,
+        proc_data_by_tag,
+        file_io_data_by_tag,
+        top_data_by_tag,
+        zzzz_map,
+        node,
+        memnew_data_by_tag,
+        mem_data_by_tag,
+        net_data_by_tag,
+        netpacket_data_by_tag,
+        # new disk data
+        diskread_data_by_tag,
+        diskwrite_data_by_tag,
+        diskbusy_data_by_tag,
+        diskwait_data_by_tag,
+        # new VG data
+        vgread_data_by_tag,
+        vgwrite_data_by_tag,
+        vgbusy_data_by_tag,
+        vgsize_data_by_tag
+    )
+
+################################################################################
+# 3. Building NDJSON docs
+################################################################################
+
+def build_all_docs(cpu_data_by_tag, lpar_data_by_tag, proc_data_by_tag,
+                   file_io_data_by_tag, memnew_data_by_tag, zzzz_map,
+                   mem_data_by_tag, net_data_by_tag, netpacket_data_by_tag,
+                   diskread_data_by_tag, diskwrite_data_by_tag,
+                   diskbusy_data_by_tag, diskwait_data_by_tag,
+                   vgread_data_by_tag, vgwrite_data_by_tag,
+                   vgbusy_data_by_tag, vgsize_data_by_tag):
+
+    docs = []
+    all_tags = (
+        set(cpu_data_by_tag.keys())
+        | set(lpar_data_by_tag.keys())
+        | set(proc_data_by_tag.keys())
+        | set(file_io_data_by_tag.keys())
+        | set(memnew_data_by_tag.keys())
+        | set(mem_data_by_tag.keys())
+        | set(net_data_by_tag.keys())
+        | set(netpacket_data_by_tag.keys())
+        | set(diskread_data_by_tag.keys())
+        | set(diskwrite_data_by_tag.keys())
+        | set(diskbusy_data_by_tag.keys())
+        | set(diskwait_data_by_tag.keys())
+        | set(vgread_data_by_tag.keys())
+        | set(vgwrite_data_by_tag.keys())
+        | set(vgbusy_data_by_tag.keys())
+        | set(vgsize_data_by_tag.keys())
+        | set(zzzz_map.keys())
+    )
+
+    for tag in sorted(all_tags):
+        dt = zzzz_map.get(tag)
+        if not dt:
+            continue
+        doc = {"@timestamp": dt}
+
+        if tag in cpu_data_by_tag:
+            doc["cpu_all"] = cpu_data_by_tag[tag]
+        if tag in lpar_data_by_tag:
+            doc["lpar"] = lpar_data_by_tag[tag]
+        if tag in proc_data_by_tag:
+            doc["proc"] = proc_data_by_tag[tag]
+        if tag in file_io_data_by_tag:
+            doc["file_io"] = file_io_data_by_tag[tag]
+        if tag in memnew_data_by_tag:
+            doc["memnew"] = memnew_data_by_tag[tag]
+        if tag in mem_data_by_tag:
+            doc["mem"] = mem_data_by_tag[tag]
+        if tag in net_data_by_tag:
+            doc["net"] = net_data_by_tag[tag]
+        if tag in netpacket_data_by_tag:
+            doc["netpacket"] = netpacket_data_by_tag[tag]
+
+        # add new disk data
+        if tag in diskread_data_by_tag:
+            doc["diskread"] = diskread_data_by_tag[tag]
+        if tag in diskwrite_data_by_tag:
+            doc["diskwrite"] = diskwrite_data_by_tag[tag]
+        if tag in diskbusy_data_by_tag:
+            doc["diskbusy"] = diskbusy_data_by_tag[tag]
+        if tag in diskwait_data_by_tag:
+            doc["diskwait"] = diskwait_data_by_tag[tag]
+
+        # add new VG data
+        if tag in vgread_data_by_tag:
+            doc["vgread"] = vgread_data_by_tag[tag]
+        if tag in vgwrite_data_by_tag:
+            doc["vgwrite"] = vgwrite_data_by_tag[tag]
+        if tag in vgbusy_data_by_tag:
+            doc["vgbusy"] = vgbusy_data_by_tag[tag]
+        if tag in vgsize_data_by_tag:
+            doc["vgsize"] = vgsize_data_by_tag[tag]
+
+        if len(doc) > 1:
+            docs.append(doc)
+
+    return docs
+
+def build_top_docs(top_data_by_tag, zzzz_map):
+    top_docs = []
+    for tag, item_list in top_data_by_tag.items():
+        dt = zzzz_map.get(tag)
+        if not dt:
+            continue
+        for rec in item_list:
+            doc = {"@timestamp": dt}
+            doc.update(rec)  # '%CPU', 'Command'
+            top_docs.append(doc)
+    return top_docs
+
+def write_ndjson(docs, filepath):
+    if not docs:
+        return
+    with open(filepath, "w", encoding="utf-8") as f:
+        for doc in docs:
+            f.write(json.dumps(doc) + "\n")
+
+################################################################################
+# 4. Generate HTML with 16 charts (existing) + 5 new DISK/VG charts (no VG SIZE)
+#    + linked zoom (autoscale linking fixed)
+################################################################################
+
+def generate_html_page(lpar_data_map, top_data_map, output_html):
+    """
+    Original charts: 16 charts + 5 new DISK/VG charts.
+    Added:
+      (1) Linked Zoom: any zoom/pan on one chart auto-updates all others.
+          A lock (relayoutLock) is used to avoid recursive autoscale loops.
+      (2) The Reset Zoom button is removed.
+    """
+    embedded_all = json.dumps(lpar_data_map)
+    embedded_top = json.dumps(top_data_map)
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>NMON Consolidated (16-charts + DISK/VG charts, no VG SIZE)</title>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <style>
+    body {{
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+    }}
+    .logo {{
+      position: fixed;
+      top: 1px;
+      right: 1px;
+      width: 200px;
+      z-index: 1000;
+    }}
+    .menu {{
+      margin: 1px;
+    }}
+    #chartsContainer {{
+      width: 100%;
+      overflow: hidden; /* so floats don't extend container */
+      margin-top: 100px;
+    }}
+    .chart-container {{
+      float: left;
+      border: 1px solid #ccc;
+      box-sizing: border-box;
+      height: 400px; /* fixed chart height */
+    }}
+    .chart-container > div {{
+      width: 100%;
+      height: 100%;
+    }}
+    #chartsContainer::after {{
+      content: "";
+      display: block;
+      clear: both;
+    }}
+  </style>
+</head>
+<body>
+  <img src="nmon2plotly.png" alt="nmon2plotly logo" class="logo" />
+  <div class="menu">
+    <label for="lpar_select">Select LPAR:</label>
+    <select id="lpar_select"></select>
+    &nbsp;&nbsp;
+    <label for="start_date">Start Date:</label>
+    <input type="date" id="start_date">
+    &nbsp;&nbsp;
+    <label for="end_date">End Date:</label>
+    <input type="date" id="end_date">
+    &nbsp;&nbsp;
+    <button onclick="applyFilter()">Filter</button>
+    &nbsp;&nbsp;
+    <label for="chartsPerRow">Charts per Row:</label>
+    <select id="chartsPerRow">
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="3" selected>3</option>
+      <option value="4">4</option>
+      <option value="5">5</option>
+      <option value="6">6</option>
+      <option value="7">7</option>
+      <option value="8">8</option>
+      <option value="9">9</option>
+      <option value="10">10</option>
+      <option value="11">11</option>
+      <option value="12">12</option>
+      <option value="13">13</option>
+      <option value="14">14</option>
+      <option value="15">15</option>
+      <option value="16">16</option>
+      <option value="17">17</option>
+      <option value="18">18</option>
+      <option value="19">19</option>
+      <option value="20">20</option>
+      <option value="21">21</option>
+    </select>
+  </div>
+  <!-- All charts in #chartsContainer -->
+  <div id="chartsContainer">
+    <div class="chart-container"><div id="cpu_usage_chart"></div></div>
+    <div class="chart-container"><div id="lpar_usage_chart"></div></div>
+    <div class="chart-container"><div id="runnable_chart"></div></div>
+    <div class="chart-container"><div id="syscall_chart"></div></div>
+    <div class="chart-container"><div id="pswitch_chart"></div></div>
+    <div class="chart-container"><div id="fork_exec_chart"></div></div>
+    <div class="chart-container"><div id="fileio_chart"></div></div>
+    <!-- 8) TOP chart -->
+    <div class="chart-container"><div id="top_cpu_chart"></div></div>
+    <!-- 9) MEMNEW chart -->
+    <div class="chart-container"><div id="memnew_chart"></div></div>
+    <!-- 10) MEM used% chart -->
+    <div class="chart-container"><div id="memused_chart"></div></div>
+    <!-- 11) Swap-in chart -->
+    <div class="chart-container"><div id="swapin_chart"></div></div>
+    <!-- 12) NET read/write -->
+    <div class="chart-container"><div id="net_chart"></div></div>
+    <!-- New: NET Stacked chart -->
+    <div class="chart-container"><div id="net_stacked_chart"></div></div>
+    <!-- 13) NETPACKET chart -->
+    <div class="chart-container"><div id="netpacket_chart"></div></div>
+    <!-- 14) NETSIZE chart -->
+    <div class="chart-container"><div id="netsize_chart"></div></div>
+    <!-- 15) FC read/write -->
+    <div class="chart-container"><div id="fc_chart"></div></div>
+    <!-- New: FC Stacked chart -->
+    <div class="chart-container"><div id="fc_stacked_chart"></div></div>
+    <!-- 16) FCXFER chart -->
+    <div class="chart-container"><div id="fcxfer_chart"></div></div>
+    <!-- 17) DISK read/write -->
+    <div class="chart-container"><div id="disk_read_write_chart"></div></div>
+    <!-- New: DISK Read/Write Stacked chart -->
+    <div class="chart-container"><div id="disk_read_write_stacked_chart"></div></div>
+    <!-- 18) DISK busy -->
+    <div class="chart-container"><div id="disk_busy_chart"></div></div>
+    <!-- 19) DISK wait -->
+    <div class="chart-container"><div id="disk_wait_chart"></div></div>
+    <!-- 20) VG read/write -->
+    <div class="chart-container"><div id="vg_read_write_chart"></div></div>
+    <!-- New: VG Read/Write Stacked chart -->
+    <div class="chart-container"><div id="vg_read_write_stacked_chart"></div></div>
+    <!-- 21) VG busy -->
+    <div class="chart-container"><div id="vg_busy_chart"></div></div>
+    <!-- The VG SIZE chart is removed. -->
+  </div>
+  <script>
+    const lparDataMap = {embedded_all};
+    const topDataMap  = {embedded_top};
+
+    // Global array for chart div IDs
+    const chartIds = [
+      "cpu_usage_chart",
+      "lpar_usage_chart",
+      "runnable_chart",
+      "syscall_chart",
+      "pswitch_chart",
+      "fork_exec_chart",
+      "fileio_chart",
+      "top_cpu_chart",
+      "memnew_chart",
+      "memused_chart",
+      "swapin_chart",
+      "net_chart",
+      "net_stacked_chart",
+      "netpacket_chart",
+      "netsize_chart",
+      "fc_chart",
+      "fc_stacked_chart",
+      "fcxfer_chart",
+      "disk_read_write_chart",
+      "disk_read_write_stacked_chart",
+      "disk_busy_chart",
+      "disk_wait_chart",
+      "vg_read_write_chart",
+      "vg_read_write_stacked_chart",
+      "vg_busy_chart"
+    ];
+
+    // Global flag to avoid recursive relayout events
+    var relayoutLock = false;
+
+    function parseTimestamp(ts) {{
+      return new Date(ts);
+    }}
+
+    // LPAR dropdown
+    const lparSelect = document.getElementById("lpar_select");
+    const lparNames = Object.keys(lparDataMap).sort();
+    for (const nm of lparNames) {{
+      const opt = document.createElement("option");
+      opt.value = nm;
+      opt.text = nm;
+      lparSelect.appendChild(opt);
+    }}
+
+    function getFilteredDocs() {{
+      const sel = lparSelect.value;
+      let docs = lparDataMap[sel] || [];
+      const startVal = document.getElementById("start_date").value;
+      const endVal   = document.getElementById("end_date").value;
+      if (startVal) {{
+        const startDate = new Date(startVal);
+        docs = docs.filter(d => parseTimestamp(d["@timestamp"]) >= startDate);
+      }}
+      if (endVal) {{
+        const endDate = new Date(endVal);
+        endDate.setHours(23,59,59,999);
+        docs = docs.filter(d => parseTimestamp(d["@timestamp"]) <= endDate);
+      }}
+      docs.sort((a,b) => parseTimestamp(a["@timestamp"]) - parseTimestamp(b["@timestamp"]));
+      return docs;
+    }}
+
+    function getFilteredTopDocs() {{
+      const sel = lparSelect.value;
+      let tdocs = topDataMap[sel] || [];
+      const startVal = document.getElementById("start_date").value;
+      const endVal   = document.getElementById("end_date").value;
+      if (startVal) {{
+        const startDate = new Date(startVal);
+        tdocs = tdocs.filter(d => parseTimestamp(d["@timestamp"]) >= startDate);
+      }}
+      if (endVal) {{
+        const endDate = new Date(endVal);
+        endDate.setHours(23,59,59,999);
+        tdocs = tdocs.filter(d => parseTimestamp(d["@timestamp"]) <= endDate);
+      }}
+      tdocs.sort((a,b) => parseTimestamp(a["@timestamp"]) - parseTimestamp(b["@timestamp"]));
+      return tdocs;
+    }}
+
+    function updateChartLayout() {{
+      const cols = parseInt(document.getElementById("chartsPerRow").value);
+      const chartContainers = document.querySelectorAll(".chart-container");
+      const widthPercent = (100 / cols) + "%";
+      chartContainers.forEach(cc => {{
+        cc.style.width = widthPercent;
+      }});
+    }}
+
+    // -------------------------------
+    // Linked Zoom: synchronize x-axis
+    // -------------------------------
+    function linkCharts(chartId) {{
+      const chartDiv = document.getElementById(chartId);
+      if (!chartDiv) return;
+      chartDiv.on('plotly_relayout', (eventData) => {{
+        if (relayoutLock) return;
+        // If eventData includes changes in the x-axis, then broadcast them
+        const update = {{}};
+        if (eventData['xaxis.range[0]'] !== undefined && eventData['xaxis.range[1]'] !== undefined) {{
+          update['xaxis.range'] = [ eventData['xaxis.range[0]'], eventData['xaxis.range[1]'] ];
+        }}
+        if (eventData['xaxis.autorange'] === true) {{
+          update['xaxis.autorange'] = true;
+        }}
+        if (Object.keys(update).length > 0) {{
+          relayoutLock = true;
+          chartIds.forEach(otherId => {{
+            if (otherId !== chartId) {{
+              Plotly.relayout(otherId, update);
+            }}
+          }});
+          setTimeout(() => {{ relayoutLock = false; }}, 50);
+        }}
+      }});
+    }}
+
+    function renderCharts() {{
+      updateChartLayout();
+      const docs = getFilteredDocs();
+      if (!docs.length) {{
+        document.getElementById("cpu_usage_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("lpar_usage_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("runnable_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("syscall_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("pswitch_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("fork_exec_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("fileio_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("top_cpu_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("memnew_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("memused_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("swapin_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("net_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("net_stacked_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("netpacket_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("netsize_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("fc_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("fc_stacked_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("fcxfer_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("disk_read_write_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("disk_read_write_stacked_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("disk_busy_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("disk_wait_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("vg_read_write_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("vg_read_write_stacked_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("vg_busy_chart").innerHTML = "<p>No data</p>";
+        return;
+      }}
+      const times = docs.map(d => parseTimestamp(d["@timestamp"]));
+      const xRange = [times[0], times[times.length - 1]];
+
+      // 1) CPU usage
+      const userVals = docs.map(d => d.cpu_all ? d.cpu_all["User%"] : 0);
+      const sysVals  = docs.map(d => d.cpu_all ? d.cpu_all["Sys%"]  : 0);
+      const idleVals = docs.map(d => d.cpu_all ? d.cpu_all["Idle%"] : 0);
+      const waitVals = docs.map(d => d.cpu_all ? d.cpu_all["Wait%"] : 0);
+      Plotly.newPlot('cpu_usage_chart', [
+        {{ x: times, y: userVals, mode: 'lines', name: 'User%', stackgroup: 'one', line: {{ color: '#1f77b4' }} }},
+        {{ x: times, y: sysVals,  mode: 'lines', name: 'Sys%',  stackgroup: 'one', line: {{ color: '#d62728' }} }},
+        {{ x: times, y: waitVals, mode: 'lines', name: 'Wait%', stackgroup: 'one', line: {{ color: '#ff7f0e' }} }},
+        {{ x: times, y: idleVals, mode: 'lines', name: 'Idle%', stackgroup: 'one', line: {{ color: '#2ca02c' }} }}
+      ], {{
+        title: 'CPU Usage (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Percentage' }}
+      }}).then(gd => linkCharts('cpu_usage_chart'));
+
+      // 2) LPAR usage
+      const physVals = docs.map(d => d.lpar ? d.lpar["PhysicalCPU"] : 0);
+      const virtVals = docs.map(d => d.lpar ? d.lpar["VirtualCPUs"] : 0);
+      const entVals  = docs.map(d => d.lpar ? d.lpar["Entitled"]    : 0);
+      Plotly.newPlot('lpar_usage_chart', [
+        {{ x: times, y: physVals, mode: 'lines', fill: 'tozeroy', fillcolor: 'rgba(0, 123, 255, 0.1)', name: 'PhysicalCPU' }},
+        {{ x: times, y: virtVals, mode: 'lines', name: 'VirtualCPUs' }},
+        {{ x: times, y: entVals,  mode: 'lines', name: 'Entitled' }}
+      ], {{
+        title: 'LPAR Usage (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'CPU Count', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('lpar_usage_chart'));
+
+      // 3) Runnable
+      const runVals = docs.map(d => d.proc ? d.proc["Runnable"] : 0);
+      Plotly.newPlot('runnable_chart', [
+        {{ x: times, y: runVals, mode: 'lines', fill: 'tozeroy', name: 'Runnable' }}
+      ], {{
+        title: 'Runnable (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Count', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('runnable_chart'));
+
+      // 4) Syscall/Read/Write
+      const syscallVals = docs.map(d => d.proc ? d.proc["Syscall"] : 0);
+      const readVals    = docs.map(d => d.proc ? d.proc["Read"]   : 0);
+      const writeVals   = docs.map(d => d.proc ? -Math.abs(d.proc["Write"]) : 0);
+      Plotly.newPlot('syscall_chart', [
+        {{ x: times, y: syscallVals, mode: 'lines', name: 'Syscall' }},
+        {{ x: times, y: readVals,    mode: 'lines', name: 'Read' }},
+        {{ x: times, y: writeVals,   mode: 'lines', name: 'Write' }}
+      ], {{
+        title: 'Syscall / Read / Write',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Calls/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('syscall_chart'));
+
+      // 5) pswitch
+      const pswVals = docs.map(d => d.proc ? d.proc["pswitch"] : 0);
+      Plotly.newPlot('pswitch_chart', [
+        {{ x: times, y: pswVals, mode: 'lines', fill: 'tozeroy', name: 'pswitch' }}
+      ], {{
+        title: 'Process Switches',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Switches/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('pswitch_chart'));
+
+      // 6) fork+exec
+      const forkVals = docs.map(d => d.proc ? d.proc["fork"] : 0);
+      const execVals = docs.map(d => d.proc ? d.proc["exec"] : 0);
+      Plotly.newPlot('fork_exec_chart', [
+        {{ x: times, y: forkVals, mode: 'lines', name: 'fork' }},
+        {{ x: times, y: execVals, mode: 'lines', name: 'exec' }}
+      ], {{
+        title: 'fork() & exec()',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Calls/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('fork_exec_chart'));
+
+      // 7) File I/O
+      const readchVals  = docs.map(d => d.file_io ? (d.file_io["readch"]  || 0) : 0);
+      const writechVals = docs.map(d => d.file_io ? (d.file_io["writech"] || 0) : 0);
+      const negWrite    = writechVals.map(v => -Math.abs(v));
+      Plotly.newPlot('fileio_chart', [
+        {{ x: times, y: readchVals, mode: 'lines', name: 'readch',  stackgroup: 'one' }},
+        {{ x: times, y: negWrite,   mode: 'lines', name: 'writech', stackgroup: 'two' }}
+      ], {{
+        title: 'File I/O: readch & writech',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Bytes', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('fileio_chart'));
+
+      // 8) TOP CPU
+      const topdocs = getFilteredTopDocs();
+      if (!topdocs.length) {{
+        document.getElementById("top_cpu_chart").innerHTML = "<p>No TOP data</p>";
+      }} else {{
+        const byCmd = {{}};
+        for (const td of topdocs) {{
+          const dt = new Date(td["@timestamp"]);
+          const cval = td["%CPU"] || 0;
+          const cmd  = td["Command"] || "unknown";
+          if (!byCmd[cmd]) {{
+            byCmd[cmd] = {{ x: [], y: [] }};
+          }}
+          byCmd[cmd].x.push(dt);
+          byCmd[cmd].y.push(cval);
+        }}
+        const traces = [];
+        for (const [cmd, arr] of Object.entries(byCmd)) {{
+          traces.push({{
+            x: arr.x,
+            y: arr.y,
+            name: cmd,
+            mode: 'lines'
+          }});
+        }}
+        Plotly.newPlot('top_cpu_chart', traces, {{
+          title: 'TOP Commands by %CPU (' + lparSelect.value + ')',
+          xaxis: {{ title: 'Time' }},
+          yaxis: {{ title: '%CPU (per process)', rangemode: 'tozero' }}
+        }}).then(gd => linkCharts('top_cpu_chart'));
+      }}
+
+      // 9) MEMNEW
+      const memSystem = docs.map(d => d.memnew ? d.memnew["System%"]  : 0);
+      const memFScache = docs.map(d => d.memnew ? d.memnew["FScache%"] : 0);
+      const memProcess = docs.map(d => d.memnew ? d.memnew["Process%"] : 0);
+      const memFree = docs.map(d => d.memnew ? d.memnew["Free%"] : 0);
+      Plotly.newPlot('memnew_chart', [
+        {{ x: times, y: memProcess, mode: 'lines', name: 'Process%', stackgroup: 'one', line: {{ color: '#1f77b4' }} }},
+        {{ x: times, y: memFScache, mode: 'lines', name: 'FScache%', stackgroup: 'one', line: {{ color: '#d62728' }} }},
+        {{ x: times, y: memSystem, mode: 'lines', name: 'System%',  stackgroup: 'one', line: {{ color: '#ff7f0e' }} }},
+        {{ x: times, y: memFree,    mode: 'lines', name: 'Free%',    stackgroup: 'one', line: {{ color: '#2ca02c' }} }}
+      ], {{
+        title: 'Memory Usage (MEMNEW) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'Percentage', range: [0, 100] }}
+      }}).then(gd => linkCharts('memnew_chart'));
+
+      // 10) MEM used%
+      const realUsed = docs.map(d => d.mem ? d.mem["Real_Used%"]    : 0);
+      const virtUsed = docs.map(d => d.mem ? d.mem["Virtual_Used%"] : 0);
+      Plotly.newPlot('memused_chart', [
+        {{ x: times, y: realUsed, mode: 'lines', fill: 'tozeroy', fillcolor: 'rgba(0, 123, 255, 0.1)', name: 'Real_Used%' }},
+        {{ x: times, y: virtUsed, mode: 'lines', name: 'Virtual_Used%' }}
+      ], {{
+        title: 'Memory Used% (MEM) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'Used %', range: [0, 100] }}
+      }}).then(gd => linkCharts('memused_chart'));
+
+      // 11) Swap-in
+      const swapinVals = docs.map(d => d.proc ? d.proc["Swap-in"] : 0);
+      Plotly.newPlot('swapin_chart', [
+        {{ x: times, y: swapinVals, mode: 'lines', fill: 'tozeroy', name: 'Swap-in' }}
+      ], {{
+        title: 'Swap-in (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'Occurrences/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('swapin_chart'));
+
+      // 12) NET usage => read/write
+      const netTracesByColumn = {{}};
+      const netColumnsSet = new Set();
+      docs.forEach(d => {{
+        if (d.net) {{
+          for (const colName in d.net) {{
+            netColumnsSet.add(colName);
+          }}
+        }}
+      }});
+      netColumnsSet.forEach(colName => {{
+        netTracesByColumn[colName] = {{ x: [], y: [] }};
+      }});
+      docs.forEach(d => {{
+        const t = parseTimestamp(d["@timestamp"]);
+        if (d.net) {{
+          for (const colName of netColumnsSet) {{
+            const val = d.net[colName] !== undefined ? d.net[colName] : 0;
+            netTracesByColumn[colName].x.push(t);
+            netTracesByColumn[colName].y.push(val);
+          }}
+        }} else {{
+          for (const colName of netColumnsSet) {{
+            netTracesByColumn[colName].x.push(t);
+            netTracesByColumn[colName].y.push(0);
+          }}
+        }}
+      }});
+      const netTraces = [];
+      for (const [colName, arrObj] of Object.entries(netTracesByColumn)) {{
+        const dashIndex = colName.indexOf('-');
+        let iface = colName;
+        let direction = "";
+        if (dashIndex > 0) {{
+          iface = colName.substring(0, dashIndex);
+          const afterDash = colName.substring(dashIndex+1);
+          if (afterDash.startsWith("read")) {{
+            direction = "read";
+          }} else if (afterDash.startsWith("write")) {{
+            direction = "write";
+          }} else {{
+            direction = afterDash;
+          }}
+        }}
+        const traceName = iface + " " + direction;
+        const clonedY = arrObj.y.map(v => v);
+        if (direction === 'write') {{
+          for (let i = 0; i < clonedY.length; i++) {{
+            clonedY[i] = -Math.abs(clonedY[i]);
+          }}
+        }}
+        netTraces.push({{
+          x: arrObj.x,
+          y: clonedY,
+          mode: 'lines',
+          name: traceName
+        }});
+      }}
+      Plotly.newPlot('net_chart', netTraces, {{
+        title: 'Network Read/Write (KB/s) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'KB/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('net_chart'));
+
+      // New: NET Stacked chart (separate stack groups for read and write)
+      const netStackedTraces = [];
+      let netReadIndex = 0;
+      let netWriteIndex = 0;
+      for (const [colName, arrObj] of Object.entries(netTracesByColumn)) {{
+        const dashIndex = colName.indexOf('-');
+        let iface = colName;
+        let direction = "";
+        if (dashIndex > 0) {{
+          iface = colName.substring(0, dashIndex);
+          const afterDash = colName.substring(dashIndex+1);
+          if (afterDash.startsWith("read")) {{
+            direction = "read";
+          }} else if (afterDash.startsWith("write")) {{
+            direction = "write";
+          }} else {{
+            direction = afterDash;
+          }}
+        }}
+        const traceName = iface + " " + direction;
+        const clonedY = arrObj.y.map(v => v);
+        if (direction === 'write') {{
+          for (let i = 0; i < clonedY.length; i++) {{
+            clonedY[i] = -Math.abs(clonedY[i]);
+          }}
+        }}
+        let fillMode;
+        if (direction === 'read') {{
+          fillMode = (netReadIndex === 0) ? 'tozeroy' : 'tonexty';
+          netStackedTraces.push({{
+            x: arrObj.x,
+            y: clonedY,
+            mode: 'lines',
+            name: traceName,
+            stackgroup: 'net_stacked_read',
+            fill: fillMode
+          }});
+          netReadIndex++;
+        }} else if (direction === 'write') {{
+          fillMode = (netWriteIndex === 0) ? 'tozeroy' : 'tonexty';
+          netStackedTraces.push({{
+            x: arrObj.x,
+            y: clonedY,
+            mode: 'lines',
+            name: traceName,
+            stackgroup: 'net_stacked_write',
+            fill: fillMode
+          }});
+          netWriteIndex++;
+        }} else {{
+          fillMode = 'tozeroy';
+          netStackedTraces.push({{
+            x: arrObj.x,
+            y: clonedY,
+            mode: 'lines',
+            name: traceName,
+            stackgroup: 'net_stacked',
+            fill: fillMode
+          }});
+        }}
+      }}
+      Plotly.newPlot('net_stacked_chart', netStackedTraces, {{
+        title: 'Network Read/Write - Stacked (KB/s) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'KB/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('net_stacked_chart'));
+
+      // 13) NETPACKET chart
+      const netpacketTracesByColumn = {{}};
+      const netpacketColumnsSet = new Set();
+      docs.forEach(d => {{
+        if (d.netpacket) {{
+          for (const colName in d.netpacket) {{
+            netpacketColumnsSet.add(colName);
+          }}
+        }}
+      }});
+      netpacketColumnsSet.forEach(colName => {{
+        netpacketTracesByColumn[colName] = {{ x: [], y: [] }};
+      }});
+      docs.forEach(d => {{
+        const t = parseTimestamp(d["@timestamp"]);
+        if (d.netpacket) {{
+          for (const colName of netpacketColumnsSet) {{
+            const val = d.netpacket[colName] !== undefined ? d.netpacket[colName] : 0;
+            netpacketTracesByColumn[colName].x.push(t);
+            netpacketTracesByColumn[colName].y.push(val);
+          }}
+        }} else {{
+          for (const colName of netpacketColumnsSet) {{
+            netpacketTracesByColumn[colName].x.push(t);
+            netpacketTracesByColumn[colName].y.push(0);
+          }}
+        }}
+      }});
+      const netpacketTraces = [];
+      for (const [colName, arrObj] of Object.entries(netpacketTracesByColumn)) {{
+        const dashIndex = colName.indexOf('-');
+        let iface = colName;
+        let direction = "";
+        if (dashIndex > 0) {{
+          iface = colName.substring(0, dashIndex);
+          const afterDash = colName.substring(dashIndex+1);
+          if (afterDash.startsWith("read")) {{
+            direction = "reads";
+          }} else if (afterDash.startsWith("write")) {{
+            direction = "writes";
+          }} else {{
+            direction = afterDash;
+          }}
+        }}
+        const traceName = iface + " " + direction;
+        const clonedY = arrObj.y.map(v => v);
+        if (direction === 'writes') {{
+          for (let i = 0; i < clonedY.length; i++) {{
+            clonedY[i] = -Math.abs(clonedY[i]);
+          }}
+        }}
+        netpacketTraces.push({{
+          x: arrObj.x,
+          y: clonedY,
+          mode: 'lines',
+          name: traceName
+        }});
+      }}
+      Plotly.newPlot('netpacket_chart', netpacketTraces, {{
+        title: 'Network Packets Read/Writes/s (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'Packets/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('netpacket_chart'));
+
+      // 14) NETSIZE chart
+      const netsizeTracesByColumn = {{}};
+      const netsizeColumnsSet = new Set();
+      docs.forEach(d => {{
+        if (d.netsize) {{
+          for (const colName in d.netsize) {{
+            netsizeColumnsSet.add(colName);
+          }}
+        }}
+      }});
+      netsizeColumnsSet.forEach(colName => {{
+        netsizeTracesByColumn[colName] = {{ x: [], y: [] }};
+      }});
+      docs.forEach(d => {{
+        const t = parseTimestamp(d["@timestamp"]);
+        if (d.netsize) {{
+          for (const colName of netsizeColumnsSet) {{
+            const val = d.netsize[colName] !== undefined ? d.netsize[colName] : 0;
+            netsizeTracesByColumn[colName].x.push(t);
+            netsizeTracesByColumn[colName].y.push(val);
+          }}
+        }} else {{
+          for (const colName of netsizeColumnsSet) {{
+            netsizeTracesByColumn[colName].x.push(t);
+            netsizeTracesByColumn[colName].y.push(0);
+          }}
+        }}
+      }});
+      const netsizeTraces = [];
+      for (const [colName, arrObj] of Object.entries(netsizeTracesByColumn)) {{
+        const dashIndex = colName.indexOf('-');
+        let iface = colName;
+        let direction = "";
+        if (dashIndex > 0) {{
+          iface = colName.substring(0, dashIndex);
+          const afterDash = colName.substring(dashIndex+1);
+          if (afterDash.startsWith("read")) {{
+            direction = "readsize";
+          }} else if (afterDash.startsWith("write")) {{
+            direction = "writesize";
+          }} else {{
+            direction = afterDash;
+          }}
+        }}
+        const traceName = iface + " " + direction;
+        const clonedY = arrObj.y.map(v => v);
+        if (direction === 'writesize') {{
+          for (let i = 0; i < clonedY.length; i++) {{
+            clonedY[i] = -Math.abs(clonedY[i]);
+          }}
+        }}
+        netsizeTraces.push({{
+          x: arrObj.x,
+          y: clonedY,
+          mode: 'lines',
+          name: traceName
+        }});
+      }}
+      Plotly.newPlot('netsize_chart', netsizeTraces, {{
+        title: 'Network Size Read/Writesize (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'Size (bytes)', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('netsize_chart'));
+
+      // 15) FC read/write
+      const fcTracesByColumn = {{}};
+      const fcColumnsSet = new Set();
+      docs.forEach(d => {{
+        if (d.fc) {{
+          for (const colName in d.fc) {{
+            fcColumnsSet.add(colName);
+          }}
+        }}
+      }});
+      fcColumnsSet.forEach(colName => {{
+        fcTracesByColumn[colName] = {{ x: [], y: [] }};
+      }});
+      docs.forEach(d => {{
+        const t = parseTimestamp(d["@timestamp"]);
+        if (d.fc) {{
+          for (const colName of fcColumnsSet) {{
+            const val = d.fc[colName] !== undefined ? d.fc[colName] : 0;
+            fcTracesByColumn[colName].x.push(t);
+            fcTracesByColumn[colName].y.push(val);
+          }}
+        }} else {{
+          for (const colName of fcColumnsSet) {{
+            fcTracesByColumn[colName].x.push(t);
+            fcTracesByColumn[colName].y.push(0);
+          }}
+        }}
+      }});
+      const fcTraces = [];
+      for (const [colName, arrObj] of Object.entries(fcTracesByColumn)) {{
+        const dashIndex = colName.indexOf('-');
+        let iface = colName;
+        let direction = "";
+        if (dashIndex > 0) {{
+          iface = colName.substring(0, dashIndex);
+          direction = colName.substring(dashIndex+1);
+        }}
+        const traceName = iface + " " + direction;
+        const clonedY = arrObj.y.map(v => v);
+        if (direction === 'write') {{
+          for (let i = 0; i < clonedY.length; i++) {{
+            clonedY[i] = -Math.abs(clonedY[i]);
+          }}
+        }}
+        fcTraces.push({{
+          x: arrObj.x,
+          y: clonedY,
+          mode: 'lines',
+          name: traceName
+        }});
+      }}
+      Plotly.newPlot('fc_chart', fcTraces, {{
+        title: 'Fibre Channel Read/Write (KB/s) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'KB/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('fc_chart'));
+
+      // New: FC Stacked chart (separate stackgroups for read and write)
+      const fcStackedTraces = [];
+      let fcReadIndex = 0;
+      let fcWriteIndex = 0;
+      for (const [colName, arrObj] of Object.entries(fcTracesByColumn)) {{
+        const dashIndex = colName.indexOf('-');
+        let iface = colName;
+        let direction = "";
+        if (dashIndex > 0) {{
+          iface = colName.substring(0, dashIndex);
+          direction = colName.substring(dashIndex+1);
+        }}
+        const traceName = iface + " " + direction;
+        const clonedY = arrObj.y.map(v => v);
+        if (direction === 'write') {{
+          for (let i = 0; i < clonedY.length; i++) {{
+            clonedY[i] = -Math.abs(clonedY[i]);
+          }}
+        }}
+        let fillMode;
+        if (direction === 'read') {{
+          fillMode = (fcReadIndex === 0) ? 'tozeroy' : 'tonexty';
+          fcStackedTraces.push({{
+            x: arrObj.x,
+            y: clonedY,
+            mode: 'lines',
+            name: traceName,
+            stackgroup: 'fc_stacked_read',
+            fill: fillMode
+          }});
+          fcReadIndex++;
+        }} else if (direction === 'write') {{
+          fillMode = (fcWriteIndex === 0) ? 'tozeroy' : 'tonexty';
+          fcStackedTraces.push({{
+            x: arrObj.x,
+            y: clonedY,
+            mode: 'lines',
+            name: traceName,
+            stackgroup: 'fc_stacked_write',
+            fill: fillMode
+          }});
+          fcWriteIndex++;
+        }} else {{
+          fillMode = 'tozeroy';
+          fcStackedTraces.push({{
+            x: arrObj.x,
+            y: clonedY,
+            mode: 'lines',
+            name: traceName,
+            stackgroup: 'fc_stacked',
+            fill: fillMode
+          }});
+        }}
+      }}
+      Plotly.newPlot('fc_stacked_chart', fcStackedTraces, {{
+        title: 'Fibre Channel Read/Write - Stacked (KB/s) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'KB/s' }}
+      }}).then(gd => linkCharts('fc_stacked_chart'));
+
+      // 16) FCXFERIN/FCXFEROUT
+      const fcxferTracesByColumn = {{}};
+      const fcxferColumnsSet = new Set();
+      docs.forEach(d => {{
+        if (d.fcxfer) {{
+          for (const colName in d.fcxfer) {{
+            fcxferColumnsSet.add(colName);
+          }}
+        }}
+      }});
+      fcxferColumnsSet.forEach(colName => {{
+        fcxferTracesByColumn[colName] = {{ x: [], y: [] }};
+      }});
+      docs.forEach(d => {{
+        const t = parseTimestamp(d["@timestamp"]);
+        if (d.fcxfer) {{
+          for (const colName of fcxferColumnsSet) {{
+            const val = d.fcxfer[colName] !== undefined ? d.fcxfer[colName] : 0;
+            fcxferTracesByColumn[colName].x.push(t);
+            fcxferTracesByColumn[colName].y.push(val);
+          }}
+        }} else {{
+          for (const colName of fcxferColumnsSet) {{
+            fcxferTracesByColumn[colName].x.push(t);
+            fcxferTracesByColumn[colName].y.push(0);
+          }}
+        }}
+      }});
+      const fcxferTraces = [];
+      for (const [colName, arrObj] of Object.entries(fcxferTracesByColumn)) {{
+        const dashIndex = colName.indexOf('-');
+        let iface = colName;
+        let direction = "";
+        if (dashIndex > 0) {{
+          iface = colName.substring(0, dashIndex);
+          direction = colName.substring(dashIndex+1);
+        }}
+        const traceName = iface + " " + direction;
+        const clonedY = arrObj.y.map(v => v);
+        if (direction === 'out') {{
+          for (let i = 0; i < clonedY.length; i++) {{
+            clonedY[i] = -Math.abs(clonedY[i]);
+          }}
+        }}
+        fcxferTraces.push({{
+          x: arrObj.x,
+          y: clonedY,
+          mode: 'lines',
+          name: traceName
+        }});
+      }}
+      Plotly.newPlot('fcxfer_chart', fcxferTraces, {{
+        title: 'Fibre Channel Xfers In/Out (fcs*) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'Transfers/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('fcxfer_chart'));
+
+      // 17) DISK read/write
+      const diskNamesSet = new Set();
+      docs.forEach(d => {{
+        if (d.diskread) {{
+          for (const diskName in d.diskread) {{
+            diskNamesSet.add(diskName);
+          }}
+        }}
+        if (d.diskwrite) {{
+          for (const diskName in d.diskwrite) {{
+            diskNamesSet.add(diskName);
+          }}
+        }}
+      }});
+      const diskRWTraces = [];
+      for (const diskName of diskNamesSet) {{
+        const xVals = [];
+        const yRead = [];
+        const yWrite = [];
+        docs.forEach(doc => {{
+          xVals.push(parseTimestamp(doc["@timestamp"]));
+          let rd = 0;
+          let wt = 0;
+          if (doc.diskread && doc.diskread[diskName] !== undefined) {{
+            rd = doc.diskread[diskName];
+          }}
+          if (doc.diskwrite && doc.diskwrite[diskName] !== undefined) {{
+            wt = doc.diskwrite[diskName];
+          }}
+          yRead.push(rd);
+          yWrite.push(-Math.abs(wt));
+        }});
+        diskRWTraces.push({{
+          x: xVals,
+          y: yRead,
+          mode: 'lines',
+          name: diskName + " read"
+        }});
+        diskRWTraces.push({{
+          x: xVals,
+          y: yWrite,
+          mode: 'lines',
+          name: diskName + " write"
+        }});
+      }}
+      Plotly.newPlot('disk_read_write_chart', diskRWTraces, {{
+        title: 'DISK Read/Write (KB/s)',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'KB/s' }}
+      }}).then(gd => linkCharts('disk_read_write_chart'));
+
+      // New: DISK Read/Write Stacked chart (separate stackgroups for read and write)
+      const diskStackedTraces = [];
+      let diskReadIndex = 0;
+      let diskWriteIndex = 0;
+      for (const diskName of diskNamesSet) {{
+        const xVals = [];
+        const yRead = [];
+        const yWrite = [];
+        docs.forEach(doc => {{
+          xVals.push(parseTimestamp(doc["@timestamp"]));
+          let rd = 0;
+          let wt = 0;
+          if (doc.diskread && doc.diskread[diskName] !== undefined) {{
+            rd = doc.diskread[diskName];
+          }}
+          if (doc.diskwrite && doc.diskwrite[diskName] !== undefined) {{
+            wt = doc.diskwrite[diskName];
+          }}
+          yRead.push(rd);
+          yWrite.push(-Math.abs(wt));
+        }});
+        let fillModeRead = (diskReadIndex === 0) ? 'tozeroy' : 'tonexty';
+        diskStackedTraces.push({{
+          x: xVals,
+          y: yRead,
+          mode: 'lines',
+          name: diskName + " read",
+          stackgroup: 'disk_stacked_read',
+          fill: fillModeRead
+        }});
+        diskReadIndex++;
+        let fillModeWrite = (diskWriteIndex === 0) ? 'tozeroy' : 'tonexty';
+        diskStackedTraces.push({{
+          x: xVals,
+          y: yWrite,
+          mode: 'lines',
+          name: diskName + " write",
+          stackgroup: 'disk_stacked_write',
+          fill: fillModeWrite
+        }});
+        diskWriteIndex++;
+      }}
+      Plotly.newPlot('disk_read_write_stacked_chart', diskStackedTraces, {{
+        title: 'DISK Read/Write - Stacked (KB/s)',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'KB/s' }}
+      }}).then(gd => linkCharts('disk_read_write_stacked_chart'));
+
+      // 18) DISK busy
+      const diskBusyNames = new Set();
+      docs.forEach(d => {{
+        if (d.diskbusy) {{
+          for (const diskName in d.diskbusy) {{
+            diskBusyNames.add(diskName);
+          }}
+        }}
+      }});
+      const diskBusyTraces = [];
+      for (const diskName of diskBusyNames) {{
+        const xVals = [];
+        const yVals = [];
+        docs.forEach(doc => {{
+          xVals.push(parseTimestamp(doc["@timestamp"]));
+          let val = 0;
+          if (doc.diskbusy && doc.diskbusy[diskName] !== undefined) {{
+            val = doc.diskbusy[diskName];
+          }}
+          yVals.push(val);
+        }});
+        diskBusyTraces.push({{
+          x: xVals,
+          y: yVals,
+          mode: 'lines',
+          name: diskName
+        }});
+      }}
+      Plotly.newPlot('disk_busy_chart', diskBusyTraces, {{
+        title: 'DISK Busy (%)',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: '%Busy', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('disk_busy_chart'));
+
+      // 19) DISK wait
+      const diskWaitNames = new Set();
+      docs.forEach(d => {{
+        if (d.diskwait) {{
+          for (const diskName in d.diskwait) {{
+            diskWaitNames.add(diskName);
+          }}
+        }}
+      }});
+      const diskWaitTraces = [];
+      for (const diskName of diskWaitNames) {{
+        const xVals = [];
+        const yVals = [];
+        docs.forEach(doc => {{
+          xVals.push(parseTimestamp(doc["@timestamp"]));
+          let val = 0;
+          if (doc.diskwait && doc.diskwait[diskName] !== undefined) {{
+            val = doc.diskwait[diskName];
+          }}
+          yVals.push(val);
+        }});
+        diskWaitTraces.push({{
+          x: xVals,
+          y: yVals,
+          mode: 'lines',
+          name: diskName
+        }});
+      }}
+      Plotly.newPlot('disk_wait_chart', diskWaitTraces, {{
+        title: 'DISK Wait (msec/xfer)',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Wait Time (msec/xfer)', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('disk_wait_chart'));
+
+      // 20) VG read/write
+      const vgNamesSet = new Set();
+      docs.forEach(d => {{
+        if (d.vgread) {{
+          for (const vgName in d.vgread) {{
+            vgNamesSet.add(vgName);
+          }}
+        }}
+        if (d.vgwrite) {{
+          for (const vgName in d.vgwrite) {{
+            vgNamesSet.add(vgName);
+          }}
+        }}
+      }});
+      const vgRWTraces = [];
+      for (const vgName of vgNamesSet) {{
+        const xVals = [];
+        const yRead = [];
+        const yWrite = [];
+        docs.forEach(doc => {{
+          xVals.push(parseTimestamp(doc["@timestamp"]));
+          let rd = 0;
+          let wt = 0;
+          if (doc.vgread && doc.vgread[vgName] !== undefined) {{
+            rd = doc.vgread[vgName];
+          }}
+          if (doc.vgwrite && doc.vgwrite[vgName] !== undefined) {{
+            wt = doc.vgwrite[vgName];
+          }}
+          yRead.push(rd);
+          yWrite.push(-Math.abs(wt));
+        }});
+        vgRWTraces.push({{
+          x: xVals,
+          y: yRead,
+          mode: 'lines',
+          name: vgName + " read"
+        }});
+        vgRWTraces.push({{
+          x: xVals,
+          y: yWrite,
+          mode: 'lines',
+          name: vgName + " write"
+        }});
+      }}
+      Plotly.newPlot('vg_read_write_chart', vgRWTraces, {{
+        title: 'VG Read/Write (KB/s)',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'KB/s' }}
+      }}).then(gd => linkCharts('vg_read_write_chart'));
+
+      // New: VG Read/Write Stacked chart (separate stackgroups for read and write)
+      const vgStackedTraces = [];
+      let vgReadIndex = 0;
+      let vgWriteIndex = 0;
+      for (const vgName of vgNamesSet) {{
+        const xVals = [];
+        const yRead = [];
+        const yWrite = [];
+        docs.forEach(doc => {{
+          xVals.push(parseTimestamp(doc["@timestamp"]));
+          let rd = 0;
+          let wt = 0;
+          if (doc.vgread && doc.vgread[vgName] !== undefined) {{
+            rd = doc.vgread[vgName];
+          }}
+          if (doc.vgwrite && doc.vgwrite[vgName] !== undefined) {{
+            wt = doc.vgwrite[vgName];
+          }}
+          yRead.push(rd);
+          yWrite.push(-Math.abs(wt));
+        }});
+        let fillModeRead = (vgReadIndex === 0) ? 'tozeroy' : 'tonexty';
+        vgStackedTraces.push({{
+          x: xVals,
+          y: yRead,
+          mode: 'lines',
+          name: vgName + " read",
+          stackgroup: 'vg_stacked_read',
+          fill: fillModeRead
+        }});
+        vgReadIndex++;
+        let fillModeWrite = (vgWriteIndex === 0) ? 'tozeroy' : 'tonexty';
+        vgStackedTraces.push({{
+          x: xVals,
+          y: yWrite,
+          mode: 'lines',
+          name: vgName + " write",
+          stackgroup: 'vg_stacked_write',
+          fill: fillModeWrite
+        }});
+        vgWriteIndex++;
+      }}
+      Plotly.newPlot('vg_read_write_stacked_chart', vgStackedTraces, {{
+        title: 'VG Read/Write - Stacked (KB/s)',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'KB/s' }}
+      }}).then(gd => linkCharts('vg_read_write_stacked_chart'));
+
+      // 21) VG busy
+      const vgBusyNames = new Set();
+      docs.forEach(d => {{
+        if (d.vgbusy) {{
+          for (const vgName in d.vgbusy) {{
+            vgBusyNames.add(vgName);
+          }}
+        }}
+      }});
+      const vgBusyTraces = [];
+      for (const vgName of vgBusyNames) {{
+        const xVals = [];
+        const yVals = [];
+        docs.forEach(doc => {{
+          xVals.push(parseTimestamp(doc["@timestamp"]));
+          let val = 0;
+          if (doc.vgbusy && doc.vgbusy[vgName] !== undefined) {{
+            val = doc.vgbusy[vgName];
+          }}
+          yVals.push(val);
+        }});
+        vgBusyTraces.push({{
+          x: xVals,
+          y: yVals,
+          mode: 'lines',
+          name: vgName
+        }});
+      }}
+      Plotly.newPlot('vg_busy_chart', vgBusyTraces, {{
+        title: 'VG Busy (%)',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: '%Busy' }}
+      }}).then(gd => linkCharts('vg_busy_chart'));
+    }}
+
+    function applyFilter() {{
+      renderCharts();
+    }}
+
+    document.getElementById("chartsPerRow").addEventListener("change", renderCharts);
+    lparSelect.addEventListener("change", renderCharts);
+
+    // initial rendering, then link all charts
+    renderCharts();
+  </script>
+</body>
+</html>"""
+
+    with open(output_html, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    print("Wrote HTML (16 existing charts + 5 new DISK/VG charts, linked zoom without reset button) to:", output_html)
+
+################################################################################
+# 5. process_file => parse => NDJSON => return
+################################################################################
+
+def process_file(nmon_file, output_dir):
+    (
+        cpu_data,
+        lpar_data,
+        proc_data,
+        file_io_data,
+        top_data_by_tag,
+        zzzz_map,
+        node,
+        memnew_data_by_tag,
+        mem_data_by_tag,
+        net_data_by_tag,
+        netpacket_data_by_tag,
+        # new disk data
+        diskread_data_by_tag,
+        diskwrite_data_by_tag,
+        diskbusy_data_by_tag,
+        diskwait_data_by_tag,
+        # new VG data
+        vgread_data_by_tag,
+        vgwrite_data_by_tag,
+        vgbusy_data_by_tag,
+        vgsize_data_by_tag
+    ) = parse_nmon_file(nmon_file)
+
+    # --- Already-existing logic for "fc" read/write and "netsize" ---
+    # We do NOT remove or change it. We only add the new "FCXFERIN"/"FCXFEROUT" pass.
+
+    fc_by_tag = {}
+    fc_read_header = []
+    fc_write_header = []
+    with open(nmon_file, 'r', encoding='utf-8') as f2:
+        for line in f2:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            key = parts[0]
+            if key == 'FCREAD' and len(parts) > 2 and not parts[1].startswith('T'):
+                fc_read_header = parts[2:]
+                continue
+            if key == 'FCWRITE' and len(parts) > 2 and not parts[1].startswith('T'):
+                fc_write_header = parts[2:]
+                continue
+            if key == 'FCREAD' and len(parts) > 2 and parts[1].startswith('T'):
+                tag = parts[1]
+                numeric_vals = []
+                for x in parts[2:]:
+                    try:
+                        numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                    except:
+                        numeric_vals.append(0.0)
+                if fc_read_header:
+                    for i, iface in enumerate(fc_read_header):
+                        val = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        fc_by_tag.setdefault(tag, {})
+                        fc_by_tag[tag][f"{iface}-read"] = val
+            if key == 'FCWRITE' and len(parts) > 2 and parts[1].startswith('T'):
+                tag = parts[1]
+                numeric_vals = []
+                for x in parts[2:]:
+                    try:
+                        numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                    except:
+                        numeric_vals.append(0.0)
+                if fc_write_header:
+                    for i, iface in enumerate(fc_write_header):
+                        val = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        fc_by_tag.setdefault(tag, {})
+                        fc_by_tag[tag][f"{iface}-write"] = val
+
+    net_size_by_tag = {}
+    with open(nmon_file, 'r', encoding='utf-8') as f3:
+        for line in f3:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            if parts[0] == 'NETSIZE':
+                if len(parts) > 2 and not parts[1].startswith('T'):
+                    continue
+                if len(parts) > 2 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    numeric_vals = []
+                    for x in parts[2:]:
+                        try:
+                            numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                        except:
+                            numeric_vals.append(0.0)
+                    if len(numeric_vals) >= 4:
+                        net_size_by_tag.setdefault(tag, {})
+                        net_size_by_tag[tag]['en2-readsize']    = numeric_vals[0]
+                        net_size_by_tag[tag]['lo0-readsize']    = numeric_vals[1]
+                        net_size_by_tag[tag]['en2-writesize']   = numeric_vals[2]
+                        net_size_by_tag[tag]['lo0-writesize']   = numeric_vals[3]
+
+    fcxfer_by_tag = {}
+    fcxfer_in_header = []
+    fcxfer_out_header = []
+    with open(nmon_file, 'r', encoding='utf-8') as f4:
+        for line in f4:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            key = parts[0]
+            if key == 'FCXFERIN' and len(parts) > 2 and not parts[1].startswith('T'):
+                fcxfer_in_header = parts[2:]
+                continue
+            if key == 'FCXFEROUT' and len(parts) > 2 and not parts[1].startswith('T'):
+                fcxfer_out_header = parts[2:]
+                continue
+            if key == 'FCXFERIN' and len(parts) > 2 and parts[1].startswith('T'):
+                tag = parts[1]
+                numeric_vals = []
+                for x in parts[2:]:
+                    try:
+                        numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                    except:
+                        numeric_vals.append(0.0)
+                if fcxfer_in_header:
+                    for i, iface in enumerate(fcxfer_in_header):
+                        val = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        fcxfer_by_tag.setdefault(tag, {})
+                        fcxfer_by_tag[tag][f"{iface}-in"] = val
+            if key == 'FCXFEROUT' and len(parts) > 2 and parts[1].startswith('T'):
+                tag = parts[1]
+                numeric_vals = []
+                for x in parts[2:]:
+                    try:
+                        numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                    except:
+                        numeric_vals.append(0.0)
+                if fcxfer_out_header:
+                    for i, iface in enumerate(fcxfer_out_header):
+                        val = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        fcxfer_by_tag.setdefault(tag, {})
+                        fcxfer_by_tag[tag][f"{iface}-out"] = val
+
+    all_docs = build_all_docs(
+        cpu_data,
+        lpar_data,
+        proc_data,
+        file_io_data,
+        memnew_data_by_tag,
+        zzzz_map,
+        mem_data_by_tag,
+        net_data_by_tag,
+        netpacket_data_by_tag,
+        diskread_data_by_tag,
+        diskwrite_data_by_tag,
+        diskbusy_data_by_tag,
+        diskwait_data_by_tag,
+        vgread_data_by_tag,
+        vgwrite_data_by_tag,
+        vgbusy_data_by_tag,
+        vgsize_data_by_tag
+    )
+
+    for d in all_docs:
+        tag_time = d["@timestamp"]
+        the_tag = None
+        for tkey, tval in zzzz_map.items():
+            if tval == tag_time:
+                the_tag = tkey
+                break
+        if the_tag and the_tag in net_size_by_tag:
+            d["netsize"] = net_size_by_tag[the_tag]
+        if the_tag and the_tag in fc_by_tag:
+            d["fc"] = fc_by_tag[the_tag]
+        if the_tag and the_tag in fcxfer_by_tag:
+            d["fcxfer"] = fcxfer_by_tag[the_tag]
+    top_docs = build_top_docs(top_data_by_tag, zzzz_map)
+
+    base_name = os.path.splitext(os.path.basename(nmon_file))[0]
+    out_all_dir = os.path.join(output_dir, "all")
+    os.makedirs(out_all_dir, exist_ok=True)
+    all_path = os.path.join(out_all_dir, f"{base_name}_all.json")
+    write_ndjson(all_docs, all_path)
+    print(f"Wrote {len(all_docs)} docs => {all_path}")
+
+    out_top_dir = os.path.join(output_dir, "top")
+    os.makedirs(out_top_dir, exist_ok=True)
+    top_path = os.path.join(out_top_dir, f"{base_name}_top.json")
+    write_ndjson(top_docs, top_path)
+    print(f"Wrote {len(top_docs)} top docs => {top_path}")
+
+    return (node, all_docs, top_docs)
+
+################################################################################
+# 6. main => parse => build => single HTML (16 + 5 = 21 charts total)
+################################################################################
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Parse .nmon => NDJSON => single HTML with multiple charts (including FCXFER in/out, plus DISK/VG but no VG SIZE)."
+    )
+    parser.add_argument("--input_dir", type=str, required=True, help="Folder containing .nmon files")
+    parser.add_argument("--output_dir", type=str, required=True, help="Output folder for NDJSON & HTML")
+    parser.add_argument("--processes", type=int, default=cpu_count(), help="Number of processes to use")
+    args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    nmon_files = glob.glob(os.path.join(args.input_dir, "*.nmon"))
+    if not nmon_files:
+        print(f"No .nmon files found in {args.input_dir}")
+        return
+
+    lpar_data_map = {}
+    top_data_map = {}
+    tasks = [(fp, args.output_dir) for fp in nmon_files]
+
+    with Pool(processes=args.processes) as p:
+        results = p.starmap(process_file, tasks)
+
+    for (nodeName, all_docs, top_docs) in results:
+        if nodeName not in lpar_data_map:
+            lpar_data_map[nodeName] = []
+        if nodeName not in top_data_map:
+            top_data_map[nodeName] = []
+        lpar_data_map[nodeName].extend(all_docs)
+        top_data_map[nodeName].extend(top_docs)
+
+    html_output = os.path.join(args.output_dir, "consolidated_lpar_usage.html")
+    generate_html_page(lpar_data_map, top_data_map, html_output)
+    print("Completed. Open:", html_output)
+
+if __name__ == "__main__":
+    main()
