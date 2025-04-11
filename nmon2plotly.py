@@ -86,6 +86,14 @@ def parse_nmon_file(nmon_file):
     jfsfile_header = []
     jfsfile_data_by_tag = {}
 
+    # --- NEW: For MEMUSE (FS Cache Memory Use) ---
+    # Only lines that start with MEMUSE and whose second field starts with T (e.g., "MEMUSE,T0001")
+    memuse_data_by_tag = {}
+
+    # --- NEW: For PAGE (Paging metrics) ---
+    # We want to use only lines where the second field starts with T (e.g., "PAGE,T0001")
+    page_data_by_tag = {}
+
     base_name = os.path.splitext(os.path.basename(nmon_file))[0]
     file_io_header_parsed = False
     file_io_columns = []
@@ -454,8 +462,50 @@ def parse_nmon_file(nmon_file):
                             d[fs] = numeric_vals[i] if i < len(numeric_vals) else 0.0
                         jfsfile_data_by_tag[tag] = d
                         continue
+                # -------------------------
+                # NEW: MEMUSE (FS Cache Memory Use data)
+                # -------------------------
+                if key == 'MEMUSE' and len(parts) > 1 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    try:
+                        numperm_val = float(parts[2]) if parts[2].strip() else 0.0
+                        minperm_val = float(parts[3]) if parts[3].strip() else 0.0
+                        maxperm_val = float(parts[4]) if parts[4].strip() else 0.0
+                        memuse_data_by_tag[tag] = {
+                            "numperm": numperm_val,
+                            "minperm": minperm_val,
+                            "maxperm": maxperm_val,
+                        }
+                    except:
+                        pass
+                    continue
+                # -------------------------
+                # NEW: PAGE (Paging metrics)
+                # -------------------------
+                if key == 'PAGE' and len(parts) > 1 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    try:
+                        # According to the header the columns are:
+                        # 0: PAGE, 1: tag, 2: faults, 3: pgin, 4: pgout, 5: pgsin, 6: pgsout, ...
+                        pgin  = float(parts[3]) if parts[3].strip() else 0.0
+                        pgout = float(parts[4]) if parts[4].strip() else 0.0
+                        pgsin = float(parts[5]) if parts[5].strip() else 0.0
+                        pgsout= float(parts[6]) if parts[6].strip() else 0.0
+                        # Ensure pgout and pgsout are negative:
+                        pgout = -abs(pgout)
+                        pgsout = -abs(pgsout)
+                        page_data_by_tag[tag] = {
+                            "pgin": pgin,
+                            "pgout": pgout,
+                            "pgsin": pgsin,
+                            "pgsout": pgsout
+                        }
+                    except:
+                        pass
+                    continue
     if not node:
         node = base_name
+    # Return all parsed data including the new memuse_data_by_tag and paging data
     return (
         cpu_data_by_tag,
         lpar_data_by_tag,
@@ -468,18 +518,17 @@ def parse_nmon_file(nmon_file):
         mem_data_by_tag,
         net_data_by_tag,
         netpacket_data_by_tag,
-        # new disk data
         diskread_data_by_tag,
         diskwrite_data_by_tag,
         diskbusy_data_by_tag,
         diskwait_data_by_tag,
-        # new VG data
         vgread_data_by_tag,
         vgwrite_data_by_tag,
         vgbusy_data_by_tag,
         vgsize_data_by_tag,
-        # new JFSFILE data
-        jfsfile_data_by_tag
+        jfsfile_data_by_tag,
+        memuse_data_by_tag,   # <<--- new FS Cache Memory Use data added here
+        page_data_by_tag      # <<--- new paging data added here
     )
 
 ################################################################################
@@ -584,6 +633,8 @@ def write_ndjson(docs, filepath):
 ################################################################################
 # 4. Generate HTML with 16 charts (existing) + 5 new DISK/VG charts (no VG SIZE)
 #    + linked zoom (autoscale linking fixed)
+#    + NEW: added paging chart (All Paging per second)
+#    + NEW: added FS Cache Memory Use (numperm) Percentage chart after TOP Commands by %CPU
 ################################################################################
 
 def generate_html_page(lpar_data_map, top_data_map, output_html):
@@ -593,6 +644,8 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       (1) Linked Zoom: any zoom/pan on one chart auto-updates all others.
           A lock (relayoutLock) is used to avoid recursive autoscale loops.
       (2) The Reset Zoom button is removed.
+      (3) NEW: A new line chart "FS Cache Memory Use (numperm) Percentage" is added after the TOP Commands by %CPU chart.
+      (4) NEW: Paging chart ("All Paging per second") is added after the Swap-in plot.
     """
     embedded_all = json.dumps(lpar_data_map)
     embedded_top = json.dumps(top_data_map)
@@ -691,12 +744,16 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="fileio_chart"></div></div>
     <!-- 8) TOP chart -->
     <div class="chart-container"><div id="top_cpu_chart"></div></div>
+    <!-- NEW: FS Cache Memory Use (numperm) Percentage chart -->
+    <div class="chart-container"><div id="fs_cache_chart"></div></div>
     <!-- 9) MEMNEW chart -->
     <div class="chart-container"><div id="memnew_chart"></div></div>
     <!-- 10) MEM used% chart -->
     <div class="chart-container"><div id="memused_chart"></div></div>
     <!-- 11) Swap-in chart -->
     <div class="chart-container"><div id="swapin_chart"></div></div>
+    <!-- NEW: Paging chart (placed after Swap-in) -->
+    <div class="chart-container"><div id="paging_chart"></div></div>
     <!-- 12) NET read/write -->
     <div class="chart-container"><div id="net_chart"></div></div>
     <!-- New: NET Stacked chart -->
@@ -725,7 +782,6 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="vg_read_write_stacked_chart"></div></div>
     <!-- 21) VG busy -->
     <div class="chart-container"><div id="vg_busy_chart"></div></div>
-    <!-- The VG SIZE chart is removed. -->
     <!-- 22) JFS Percent Full -->
     <div class="chart-container"><div id="jfs_percent_full_chart"></div></div>
   </div>
@@ -733,7 +789,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     const lparDataMap = {embedded_all};
     const topDataMap  = {embedded_top};
 
-    // Global array for chart div IDs
+    // Global array for chart div IDs; note the new "fs_cache_chart" is inserted after "top_cpu_chart"
     const chartIds = [
       "cpu_usage_chart",
       "lpar_usage_chart",
@@ -743,9 +799,11 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "fork_exec_chart",
       "fileio_chart",
       "top_cpu_chart",
+      "fs_cache_chart",    // <-- New FS Cache chart
       "memnew_chart",
       "memused_chart",
       "swapin_chart",
+      "paging_chart",
       "net_chart",
       "net_stacked_chart",
       "netpacket_chart",
@@ -857,32 +915,9 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       updateChartLayout();
       const docs = getFilteredDocs();
       if (!docs.length) {{
-        document.getElementById("cpu_usage_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("lpar_usage_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("runnable_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("syscall_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("pswitch_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("fork_exec_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("fileio_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("top_cpu_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("memnew_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("memused_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("swapin_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("net_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("net_stacked_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("netpacket_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("netsize_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("fc_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("fc_stacked_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("fcxfer_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("disk_read_write_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("disk_read_write_stacked_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("disk_busy_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("disk_wait_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("vg_read_write_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("vg_read_write_stacked_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("vg_busy_chart").innerHTML = "<p>No data</p>";
-        document.getElementById("jfs_percent_full_chart").innerHTML = "<p>No data</p>";
+        chartIds.forEach(id => {{
+          document.getElementById(id).innerHTML = "<p>No data</p>";
+        }});
         return;
       }}
       const times = docs.map(d => parseTimestamp(d["@timestamp"]));
@@ -1009,6 +1044,20 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         }}).then(gd => linkCharts('top_cpu_chart'));
       }}
 
+      // NEW: FS Cache Memory Use (numperm) Percentage chart
+      const numpermVals = docs.map(d => d.memuse ? d.memuse["numperm"] : 0);
+      const minpermVals = docs.map(d => d.memuse ? d.memuse["minperm"] : 0);
+      const maxpermVals = docs.map(d => d.memuse ? d.memuse["maxperm"] : 0);
+      Plotly.newPlot('fs_cache_chart', [
+        {{ x: times, y: numpermVals, mode: 'lines', name: 'numperm' }},
+        {{ x: times, y: minpermVals, mode: 'lines', name: 'minperm' }},
+        {{ x: times, y: maxpermVals, mode: 'lines', name: 'maxperm' }}
+      ], {{
+        title: 'FS Cache Memory Use (numperm) Percentage (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Percentage', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('fs_cache_chart'));
+
       // 9) MEMNEW
       const memSystem = docs.map(d => d.memnew ? d.memnew["System%"]  : 0);
       const memFScache = docs.map(d => d.memnew ? d.memnew["FScache%"] : 0);
@@ -1046,6 +1095,22 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         xaxis: {{ title: 'Time' }},
         yaxis: {{ title: 'Occurrences/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('swapin_chart'));
+
+      // NEW: All Paging per second chart (from PAGE lines)
+      const pginVals = docs.map(d => d.page ? d.page["pgin"] : 0);
+      const pgoutVals = docs.map(d => d.page ? -Math.abs(d.page["pgout"]) : 0);
+      const pgsinVals = docs.map(d => d.page ? d.page["pgsin"] : 0);
+      const pgsoutVals = docs.map(d => d.page ? -Math.abs(d.page["pgsout"]) : 0);
+      Plotly.newPlot('paging_chart', [
+        {{ x: times, y: pginVals, mode: 'lines', name: 'pgin' }},
+        {{ x: times, y: pgoutVals, mode: 'lines', name: 'pgout' }},
+        {{ x: times, y: pgsinVals, mode: 'lines', name: 'pgsin' }},
+        {{ x: times, y: pgsoutVals, mode: 'lines', name: 'pgsout' }}
+      ], {{
+        title: 'All Paging per second (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Paging/sec', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('paging_chart'));
 
       // 12) NET usage => read/write
       const netTracesByColumn = {{}};
@@ -1824,7 +1889,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
 
     with open(output_html, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print("Wrote HTML (16 existing charts + 5 new DISK/VG charts, linked zoom without reset button) to:", output_html)
+    print("Wrote HTML (16 existing charts + 5 new DISK/VG charts, plus new Paging and FS Cache charts) to:", output_html)
 
 ################################################################################
 # 5. process_file => parse => NDJSON => return
@@ -1851,10 +1916,12 @@ def process_file(nmon_file, output_dir):
         vgwrite_data_by_tag,
         vgbusy_data_by_tag,
         vgsize_data_by_tag,
-        jfsfile_data_by_tag
+        jfsfile_data_by_tag,
+        memuse_data_by_tag,   # NEW: FS Cache Memory Use data
+        page_data_by_tag      # NEW: Paging data
     ) = parse_nmon_file(nmon_file)
 
-    # --- Already-existing logic for "fc" read/write and "netsize" ---
+    # --- Already-existing logic for "fc" read/write and "netsize" --- 
     # We do NOT remove or change it. We only add the new "FCXFERIN"/"FCXFEROUT" pass.
 
     fc_by_tag = {}
@@ -2003,6 +2070,12 @@ def process_file(nmon_file, output_dir):
             d["fcxfer"] = fcxfer_by_tag[the_tag]
         if the_tag and the_tag in jfsfile_data_by_tag:
             d["jfsfile"] = jfsfile_data_by_tag[the_tag]
+        # NEW: add FS Cache Memory Use data if available
+        if the_tag and the_tag in memuse_data_by_tag:
+            d["memuse"] = memuse_data_by_tag[the_tag]
+        # NEW: add paging data if available
+        if the_tag and the_tag in page_data_by_tag:
+            d["page"] = page_data_by_tag[the_tag]
     top_docs = build_top_docs(top_data_by_tag, zzzz_map)
 
     base_name = os.path.splitext(os.path.basename(nmon_file))[0]
