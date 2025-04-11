@@ -86,13 +86,19 @@ def parse_nmon_file(nmon_file):
     jfsfile_header = []
     jfsfile_data_by_tag = {}
 
-    # --- NEW: For MEMUSE (FS Cache Memory Use) ---
+    # --- NEW: For MEMUSE (FS Cache Memory Use data) ---
     # Only lines that start with MEMUSE and whose second field starts with T (e.g., "MEMUSE,T0001")
     memuse_data_by_tag = {}
 
     # --- NEW: For PAGE (Paging metrics) ---
     # We want to use only lines where the second field starts with T (e.g., "PAGE,T0001")
     page_data_by_tag = {}
+
+    # --- NEW: For SEA (Shared Ethernet Adapter metrics) ---
+    # Only lines that start with SEA and whose second field starts with T (e.g., "SEA,T0001")
+    sea_header_parsed = False
+    sea_header = []
+    sea_data_by_tag = {}
 
     base_name = os.path.splitext(os.path.basename(nmon_file))[0]
     file_io_header_parsed = False
@@ -503,9 +509,30 @@ def parse_nmon_file(nmon_file):
                     except:
                         pass
                     continue
+                # -------------------------
+                # NEW: SEA (Shared Ethernet Adapter metrics)
+                # -------------------------
+                if key == 'SEA':
+                    if (not sea_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        sea_header = parts[2:]
+                        sea_header_parsed = True
+                        continue
+                    if len(parts) > 1 and parts[1].startswith('T') and sea_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, col_name in enumerate(sea_header):
+                            d[col_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        sea_data_by_tag[tag] = d
+                        continue
     if not node:
         node = base_name
-    # Return all parsed data including the new memuse_data_by_tag and paging data
+    # Return all parsed data including the new memuse_data_by_tag, paging data, and sea_data_by_tag
     return (
         cpu_data_by_tag,
         lpar_data_by_tag,
@@ -528,7 +555,8 @@ def parse_nmon_file(nmon_file):
         vgsize_data_by_tag,
         jfsfile_data_by_tag,
         memuse_data_by_tag,   # <<--- new FS Cache Memory Use data added here
-        page_data_by_tag      # <<--- new paging data added here
+        page_data_by_tag,     # <<--- new paging data added here
+        sea_data_by_tag       # <<--- new SEA data added here
     )
 
 ################################################################################
@@ -633,8 +661,9 @@ def write_ndjson(docs, filepath):
 ################################################################################
 # 4. Generate HTML with 16 charts (existing) + 5 new DISK/VG charts (no VG SIZE)
 #    + linked zoom (autoscale linking fixed)
-#    + NEW: added paging chart (All Paging per second)
-#    + NEW: added FS Cache Memory Use (numperm) Percentage chart after TOP Commands by %CPU
+#    + NEW: added paging chart, FS Cache Memory Use (numperm) Percentage chart,
+#           unstacked SEA (READ/WRITE (KB/s)) chart,
+#           and NEW: SEA Read/Write - Stacked (KB/s) chart.
 ################################################################################
 
 def generate_html_page(lpar_data_map, top_data_map, output_html):
@@ -646,6 +675,8 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       (2) The Reset Zoom button is removed.
       (3) NEW: A new line chart "FS Cache Memory Use (numperm) Percentage" is added after the TOP Commands by %CPU chart.
       (4) NEW: Paging chart ("All Paging per second") is added after the Swap-in plot.
+      (5) NEW: SEA (READ/WRITE (KB/s)) chart is added.
+      (6) NEW: SEA Read/Write - Stacked (KB/s) chart is added.
     """
     embedded_all = json.dumps(lpar_data_map)
     embedded_top = json.dumps(top_data_map)
@@ -731,6 +762,8 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       <option value="19">19</option>
       <option value="20">20</option>
       <option value="21">21</option>
+      <option value="22">22</option>
+      <option value="23">23</option>
     </select>
   </div>
   <!-- All charts in #chartsContainer -->
@@ -784,12 +817,16 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="vg_busy_chart"></div></div>
     <!-- 22) JFS Percent Full -->
     <div class="chart-container"><div id="jfs_percent_full_chart"></div></div>
+    <!-- NEW: SEA (READ/WRITE (KB/s)) chart -->
+    <div class="chart-container"><div id="sea_chart"></div></div>
+    <!-- NEW: SEA Read/Write - Stacked (KB/s) chart -->
+    <div class="chart-container"><div id="sea_stacked_chart"></div></div>
   </div>
   <script>
     const lparDataMap = {embedded_all};
     const topDataMap  = {embedded_top};
 
-    // Global array for chart div IDs; note the new "fs_cache_chart" is inserted after "top_cpu_chart"
+    // Global array for chart div IDs; note the new "sea_stacked_chart" is included.
     const chartIds = [
       "cpu_usage_chart",
       "lpar_usage_chart",
@@ -799,7 +836,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "fork_exec_chart",
       "fileio_chart",
       "top_cpu_chart",
-      "fs_cache_chart",    // <-- New FS Cache chart
+      "fs_cache_chart",
       "memnew_chart",
       "memused_chart",
       "swapin_chart",
@@ -818,7 +855,9 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "vg_read_write_chart",
       "vg_read_write_stacked_chart",
       "vg_busy_chart",
-      "jfs_percent_full_chart"
+      "jfs_percent_full_chart",
+      "sea_chart",
+      "sea_stacked_chart"
     ];
 
     // Global flag to avoid recursive relayout events
@@ -1872,6 +1911,84 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         xaxis: {{ title: 'Time', range: xRange }},
         yaxis: {{ title: 'Percentage', range: [0, 100] }}
       }}).then(gd => linkCharts('jfs_percent_full_chart'));
+
+      // NEW: SEA (READ/WRITE (KB/s)) chart (unstacked)
+      const seaTracesByInterface = {{}};
+      docs.forEach(d => {{
+        if (d.sea) {{
+          const time = parseTimestamp(d["@timestamp"]);
+          for (const colName in d.sea) {{
+            // Expecting keys like "ent25-read-KB/s" or "ent25-write-KB/s"
+            const parts = colName.split('-');
+            const iface = parts[0]; // e.g. "ent25"
+            const metric = parts[1];
+            if (!seaTracesByInterface[iface]) {{
+              seaTracesByInterface[iface] = {{ read: {{ x: [], y: [] }}, write: {{ x: [], y: [] }} }};
+            }}
+            if (metric.startsWith("read")) {{
+              seaTracesByInterface[iface].read.x.push(time);
+              seaTracesByInterface[iface].read.y.push(d.sea[colName]);
+            }} else if (metric.startsWith("write")) {{
+              seaTracesByInterface[iface].write.x.push(time);
+              seaTracesByInterface[iface].write.y.push(-Math.abs(d.sea[colName]));
+            }}
+          }}
+        }}
+      }});
+      const seaTraces = [];
+      for (const iface in seaTracesByInterface) {{
+        seaTraces.push({{
+          x: seaTracesByInterface[iface].read.x,
+          y: seaTracesByInterface[iface].read.y,
+          mode: 'lines',
+          name: iface + " read"
+        }});
+        seaTraces.push({{
+          x: seaTracesByInterface[iface].write.x,
+          y: seaTracesByInterface[iface].write.y,
+          mode: 'lines',
+          name: iface + " write",
+          legendgroup: iface,
+          showlegend: false
+        }});
+      }}
+      Plotly.newPlot('sea_chart', seaTraces, {{
+        title: 'SEA (READ/WRITE (KB/s)) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'KB/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('sea_chart'));
+
+      // NEW: SEA Read/Write - Stacked (KB/s) chart
+      const seaStackedTraces = [];
+      let firstRead = true;
+      let firstWrite = true;
+      for (const iface in seaTracesByInterface) {{
+          let readFill = firstRead ? 'tozeroy' : 'tonexty';
+          firstRead = false;
+          let writeFill = firstWrite ? 'tozeroy' : 'tonexty';
+          firstWrite = false;
+          seaStackedTraces.push({{
+            x: seaTracesByInterface[iface].read.x,
+            y: seaTracesByInterface[iface].read.y,
+            mode: 'lines',
+            name: iface + " read",
+            stackgroup: 'sea_stacked_read',
+            fill: readFill
+          }});
+          seaStackedTraces.push({{
+            x: seaTracesByInterface[iface].write.x,
+            y: seaTracesByInterface[iface].write.y,
+            mode: 'lines',
+            name: iface + " write",
+            stackgroup: 'sea_stacked_write',
+            fill: writeFill
+          }});
+      }}
+      Plotly.newPlot('sea_stacked_chart', seaStackedTraces, {{
+         title: 'SEA Read/Write - Stacked (KB/s) (' + lparSelect.value + ')',
+         xaxis: {{ title: 'Time', range: xRange }},
+         yaxis: {{ title: 'KB/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('sea_stacked_chart'));
     }}
 
     function applyFilter() {{
@@ -1889,7 +2006,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
 
     with open(output_html, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print("Wrote HTML (16 existing charts + 5 new DISK/VG charts, plus new Paging and FS Cache charts) to:", output_html)
+    print("Wrote HTML (16 existing charts + 5 new DISK/VG charts, plus new Paging, FS Cache, unstacked SEA and stacked SEA charts) to:", output_html)
 
 ################################################################################
 # 5. process_file => parse => NDJSON => return
@@ -1918,7 +2035,8 @@ def process_file(nmon_file, output_dir):
         vgsize_data_by_tag,
         jfsfile_data_by_tag,
         memuse_data_by_tag,   # NEW: FS Cache Memory Use data
-        page_data_by_tag      # NEW: Paging data
+        page_data_by_tag,     # NEW: Paging data
+        sea_data_by_tag       # NEW: SEA data
     ) = parse_nmon_file(nmon_file)
 
     # --- Already-existing logic for "fc" read/write and "netsize" --- 
@@ -2076,6 +2194,9 @@ def process_file(nmon_file, output_dir):
         # NEW: add paging data if available
         if the_tag and the_tag in page_data_by_tag:
             d["page"] = page_data_by_tag[the_tag]
+        # NEW: add SEA data if available
+        if the_tag and the_tag in sea_data_by_tag:
+            d["sea"] = sea_data_by_tag[the_tag]
     top_docs = build_top_docs(top_data_by_tag, zzzz_map)
 
     base_name = os.path.splitext(os.path.basename(nmon_file))[0]
@@ -2094,7 +2215,7 @@ def process_file(nmon_file, output_dir):
     return (node, all_docs, top_docs)
 
 ################################################################################
-# 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS chart)
+# 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA and SEA Stacked charts)
 ################################################################################
 
 def main():
