@@ -81,15 +81,9 @@ def parse_nmon_file(nmon_file):
     vgsize_header = []
     vgsize_data_by_tag = {}
 
-    # New: For PAGE lines (to plot pgin, pgout, pgsin, pgsout)
-    page_header = None
-    page_data_by_tag = {}
-
-    # New: For MEMUSE lines (Filesystem Cache Memory Use)
-    memuse_data_by_tag = {}
-
-    # New: For JFSFILE lines (JFS Percent Full)
-    jfsfile_header = None
+    # --- For JFSFILE (new) ---
+    jfsfile_header_parsed = False
+    jfsfile_header = []
     jfsfile_data_by_tag = {}
 
     base_name = os.path.splitext(os.path.basename(nmon_file))[0]
@@ -104,49 +98,6 @@ def parse_nmon_file(nmon_file):
                     continue
                 parts = line.split(',')
                 key = parts[0]
-                
-                # New: Process MEMUSE lines (only data lines starting with T)
-                if key == 'MEMUSE' and len(parts) > 1 and parts[1].startswith('T'):
-                    tag = parts[1]
-                    try:
-                        numperm_val = float(parts[2]) if parts[2].strip() else 0.0
-                    except:
-                        numperm_val = 0.0
-                    try:
-                        minperm_val = float(parts[3]) if parts[3].strip() else 0.0
-                    except:
-                        minperm_val = 0.0
-                    try:
-                        maxperm_val = float(parts[4]) if parts[4].strip() else 0.0
-                    except:
-                        maxperm_val = 0.0
-                    memuse_data_by_tag[tag] = {
-                        'numperm': numperm_val,
-                        'minperm': minperm_val,
-                        'maxperm': maxperm_val
-                    }
-                    continue
-
-                # New: Process JFSFILE lines (only data lines with tag)
-                if key == 'JFSFILE':
-                    # If header line (second field does not start with "T")
-                    if len(parts) > 1 and not parts[1].startswith('T'):
-                        jfsfile_header = parts[2:]
-                        continue
-                    # Data line: second field starts with "T"
-                    if len(parts) > 1 and parts[1].startswith('T'):
-                        tag = parts[1]
-                        if jfsfile_header is None:
-                            continue
-                        data = {}
-                        for i, fs in enumerate(jfsfile_header):
-                            try:
-                                data[fs] = float(parts[i+2]) if (i+2 < len(parts) and parts[i+2].strip()) else 0.0
-                            except:
-                                data[fs] = 0.0
-                        jfsfile_data_by_tag[tag] = data
-                        continue
-
                 # ZZZZ => timestamps
                 if key == 'ZZZZ' and len(parts) >= 4:
                     tag = parts[1]
@@ -481,7 +432,28 @@ def parse_nmon_file(nmon_file):
                             d[vg_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
                         vgsize_data_by_tag[tag] = d
                     continue
-
+                # -------------------------
+                # JFSFILE (new chart)
+                # -------------------------
+                if key == 'JFSFILE':
+                    if (not jfsfile_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        # Skip the descriptive column and grab the file systems (e.g., '/', '/admin', etc.)
+                        jfsfile_header = parts[2:]
+                        jfsfile_header_parsed = True
+                        continue
+                    if len(parts) > 1 and parts[1].startswith('T') and jfsfile_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, fs in enumerate(jfsfile_header):
+                            d[fs] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        jfsfile_data_by_tag[tag] = d
+                        continue
     if not node:
         node = base_name
     return (
@@ -496,17 +468,18 @@ def parse_nmon_file(nmon_file):
         mem_data_by_tag,
         net_data_by_tag,
         netpacket_data_by_tag,
+        # new disk data
         diskread_data_by_tag,
         diskwrite_data_by_tag,
         diskbusy_data_by_tag,
         diskwait_data_by_tag,
+        # new VG data
         vgread_data_by_tag,
         vgwrite_data_by_tag,
         vgbusy_data_by_tag,
         vgsize_data_by_tag,
-        page_data_by_tag,
-        memuse_data_by_tag,
-        jfsfile_data_by_tag    # New: attach JFSFILE data
+        # new JFSFILE data
+        jfsfile_data_by_tag
     )
 
 ################################################################################
@@ -519,8 +492,7 @@ def build_all_docs(cpu_data_by_tag, lpar_data_by_tag, proc_data_by_tag,
                    diskread_data_by_tag, diskwrite_data_by_tag,
                    diskbusy_data_by_tag, diskwait_data_by_tag,
                    vgread_data_by_tag, vgwrite_data_by_tag,
-                   vgbusy_data_by_tag, vgsize_data_by_tag,
-                   memuse_data_by_tag, jfsfile_data_by_tag):
+                   vgbusy_data_by_tag, vgsize_data_by_tag):
     docs = []
     all_tags = (
         set(cpu_data_by_tag.keys())
@@ -540,8 +512,6 @@ def build_all_docs(cpu_data_by_tag, lpar_data_by_tag, proc_data_by_tag,
         | set(vgbusy_data_by_tag.keys())
         | set(vgsize_data_by_tag.keys())
         | set(zzzz_map.keys())
-        | set(memuse_data_by_tag.keys())
-        | set(jfsfile_data_by_tag.keys())
     )
 
     for tag in sorted(all_tags):
@@ -586,12 +556,6 @@ def build_all_docs(cpu_data_by_tag, lpar_data_by_tag, proc_data_by_tag,
             doc["vgbusy"] = vgbusy_data_by_tag[tag]
         if tag in vgsize_data_by_tag:
             doc["vgsize"] = vgsize_data_by_tag[tag]
-
-        if tag in memuse_data_by_tag:
-            doc["memuse"] = memuse_data_by_tag[tag]
-
-        if tag in jfsfile_data_by_tag:
-            doc["jfsfile"] = jfsfile_data_by_tag[tag]
 
         if len(doc) > 1:
             docs.append(doc)
@@ -731,12 +695,8 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="memnew_chart"></div></div>
     <!-- 10) MEM used% chart -->
     <div class="chart-container"><div id="memused_chart"></div></div>
-    <!-- New: Filesystem Cache Memory Use (numperm) Percentage chart -->
-    <div class="chart-container"><div id="memuse_chart"></div></div>
     <!-- 11) Swap-in chart -->
     <div class="chart-container"><div id="swapin_chart"></div></div>
-    <!-- New: PAGE chart -->
-    <div class="chart-container"><div id="page_chart"></div></div>
     <!-- 12) NET read/write -->
     <div class="chart-container"><div id="net_chart"></div></div>
     <!-- New: NET Stacked chart -->
@@ -765,8 +725,9 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="vg_read_write_stacked_chart"></div></div>
     <!-- 21) VG busy -->
     <div class="chart-container"><div id="vg_busy_chart"></div></div>
-    <!-- New: JFS Percent Full chart -->
-    <div class="chart-container"><div id="jfsfile_chart"></div></div>
+    <!-- The VG SIZE chart is removed. -->
+    <!-- 22) JFS Percent Full -->
+    <div class="chart-container"><div id="jfs_percent_full_chart"></div></div>
   </div>
   <script>
     const lparDataMap = {embedded_all};
@@ -784,9 +745,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "top_cpu_chart",
       "memnew_chart",
       "memused_chart",
-      "memuse_chart",
       "swapin_chart",
-      "page_chart",
       "net_chart",
       "net_stacked_chart",
       "netpacket_chart",
@@ -801,7 +760,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "vg_read_write_chart",
       "vg_read_write_stacked_chart",
       "vg_busy_chart",
-      "jfsfile_chart"
+      "jfs_percent_full_chart"
     ];
 
     // Global flag to avoid recursive relayout events
@@ -898,9 +857,32 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       updateChartLayout();
       const docs = getFilteredDocs();
       if (!docs.length) {{
-        chartIds.forEach(id => {{
-          document.getElementById(id).innerHTML = "<p>No data</p>";
-        }});
+        document.getElementById("cpu_usage_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("lpar_usage_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("runnable_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("syscall_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("pswitch_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("fork_exec_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("fileio_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("top_cpu_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("memnew_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("memused_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("swapin_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("net_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("net_stacked_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("netpacket_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("netsize_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("fc_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("fc_stacked_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("fcxfer_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("disk_read_write_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("disk_read_write_stacked_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("disk_busy_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("disk_wait_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("vg_read_write_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("vg_read_write_stacked_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("vg_busy_chart").innerHTML = "<p>No data</p>";
+        document.getElementById("jfs_percent_full_chart").innerHTML = "<p>No data</p>";
         return;
       }}
       const times = docs.map(d => parseTimestamp(d["@timestamp"]));
@@ -1055,21 +1037,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         yaxis: {{ title: 'Used %', range: [0, 100] }}
       }}).then(gd => linkCharts('memused_chart'));
 
-      // New: Filesystem Cache Memory Use (numperm) Percentage chart
-      const memuse_numperm = docs.map(d => d.memuse ? d.memuse.numperm : 0);
-      const memuse_minperm = docs.map(d => d.memuse ? d.memuse.minperm : 0);
-      const memuse_maxperm = docs.map(d => d.memuse ? d.memuse.maxperm : 0);
-      Plotly.newPlot('memuse_chart', [
-        {{ x: times, y: memuse_numperm, mode: 'lines', name: '%numperm' }},
-        {{ x: times, y: memuse_minperm, mode: 'lines', name: '%minperm' }},
-        {{ x: times, y: memuse_maxperm, mode: 'lines', name: '%maxperm' }}
-      ], {{
-        title: 'Filesystem Cache Memory Use (numperm) Percentage (' + lparSelect.value + ')',
-        xaxis: {{ title: 'Time', range: xRange }},
-        yaxis: {{ title: 'Percentage', range: [0, 100] }}
-      }}).then(gd => linkCharts('memuse_chart'));
-
-      // 11) Swap-in chart
+      // 11) Swap-in
       const swapinVals = docs.map(d => d.proc ? d.proc["Swap-in"] : 0);
       Plotly.newPlot('swapin_chart', [
         {{ x: times, y: swapinVals, mode: 'lines', fill: 'tozeroy', name: 'Swap-in' }}
@@ -1078,22 +1046,6 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         xaxis: {{ title: 'Time' }},
         yaxis: {{ title: 'Occurrences/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('swapin_chart'));
-
-      // New: PAGE chart: pgin, pgout, pgsin, pgsout
-      const page_pgin = docs.map(d => d.page ? d.page.pgin : 0);
-      const page_pgout = docs.map(d => d.page ? d.page.pgout : 0);
-      const page_pgsin = docs.map(d => d.page ? d.page.pgsin : 0);
-      const page_pgsout = docs.map(d => d.page ? d.page.pgsout : 0);
-      Plotly.newPlot('page_chart', [
-        {{ x: times, y: page_pgin, mode: 'lines', name: 'pgin' }},
-        {{ x: times, y: page_pgout, mode: 'lines', name: 'pgout' }},
-        {{ x: times, y: page_pgsin, mode: 'lines', name: 'pgsin' }},
-        {{ x: times, y: page_pgsout, mode: 'lines', name: 'pgsout' }}
-      ], {{
-        title: 'Paging Activity (' + lparSelect.value + ')',
-        xaxis: {{ title: 'Time', range: xRange }},
-        yaxis: {{ title: 'Pages/s', rangemode: 'tozero' }}
-      }}).then(gd => linkCharts('page_chart'));
 
       // 12) NET usage => read/write
       const netTracesByColumn = {{}};
@@ -1828,33 +1780,33 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         yaxis: {{ title: '%Busy' }}
       }}).then(gd => linkCharts('vg_busy_chart'));
 
-      // New: JFS Percent Full chart (using JFSFILE data)
-      const jfsfileTraces = {{}};
+      // 22) JFS Percent Full
+      const jfsfileTracesByColumn = {{}};
       docs.forEach(d => {{
         if (d.jfsfile) {{
           for (const fs in d.jfsfile) {{
-            if (!jfsfileTraces[fs]) {{
-              jfsfileTraces[fs] = {{ x: [], y: [] }};
+            if (!jfsfileTracesByColumn[fs]) {{
+              jfsfileTracesByColumn[fs] = {{ x: [], y: [] }};
             }}
-            jfsfileTraces[fs].x.push(parseTimestamp(d["@timestamp"]));
-            jfsfileTraces[fs].y.push(d.jfsfile[fs]);
+            jfsfileTracesByColumn[fs].x.push(parseTimestamp(d["@timestamp"]));
+            jfsfileTracesByColumn[fs].y.push(d.jfsfile[fs]);
           }}
         }}
       }});
-      const jfsfileTraceArray = [];
-      for (const [fs, obj] of Object.entries(jfsfileTraces)) {{
-        jfsfileTraceArray.push({{
-          x: obj.x,
-          y: obj.y,
+      const jfsTraces = [];
+      for (const [fs, arrObj] of Object.entries(jfsfileTracesByColumn)) {{
+        jfsTraces.push({{
+          x: arrObj.x,
+          y: arrObj.y,
           mode: 'lines',
           name: fs
         }});
       }}
-      Plotly.newPlot('jfsfile_chart', jfsfileTraceArray, {{
+      Plotly.newPlot('jfs_percent_full_chart', jfsTraces, {{
         title: 'JFS Percent Full (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time', range: xRange }},
-        yaxis: {{ title: 'Percent Full', range: [0, 100] }}
-      }}).then(gd => linkCharts('jfsfile_chart'));
+        yaxis: {{ title: 'Percentage', range: [0, 100] }}
+      }}).then(gd => linkCharts('jfs_percent_full_chart'));
     }}
 
     function applyFilter() {{
@@ -1899,12 +1851,12 @@ def process_file(nmon_file, output_dir):
         vgwrite_data_by_tag,
         vgbusy_data_by_tag,
         vgsize_data_by_tag,
-        page_data_by_tag,
-        memuse_data_by_tag,
-        jfsfile_data_by_tag   # New JFSFILE data
+        jfsfile_data_by_tag
     ) = parse_nmon_file(nmon_file)
 
-    # --- Already-existing logic for "fc" read/write and "netsize" ---    
+    # --- Already-existing logic for "fc" read/write and "netsize" ---
+    # We do NOT remove or change it. We only add the new "FCXFERIN"/"FCXFEROUT" pass.
+
     fc_by_tag = {}
     fc_read_header = []
     fc_write_header = []
@@ -2033,9 +1985,7 @@ def process_file(nmon_file, output_dir):
         vgread_data_by_tag,
         vgwrite_data_by_tag,
         vgbusy_data_by_tag,
-        vgsize_data_by_tag,
-        memuse_data_by_tag,
-        jfsfile_data_by_tag    # Pass new JFSFILE data
+        vgsize_data_by_tag
     )
 
     for d in all_docs:
@@ -2051,13 +2001,6 @@ def process_file(nmon_file, output_dir):
             d["fc"] = fc_by_tag[the_tag]
         if the_tag and the_tag in fcxfer_by_tag:
             d["fcxfer"] = fcxfer_by_tag[the_tag]
-        # New: attach PAGE data
-        if the_tag and the_tag in page_data_by_tag:
-            d["page"] = page_data_by_tag[the_tag]
-        # New: attach MEMUSE data (if not already attached)
-        if the_tag and the_tag in memuse_data_by_tag:
-            d["memuse"] = memuse_data_by_tag[the_tag]
-        # New: attach JFSFILE data
         if the_tag and the_tag in jfsfile_data_by_tag:
             d["jfsfile"] = jfsfile_data_by_tag[the_tag]
     top_docs = build_top_docs(top_data_by_tag, zzzz_map)
@@ -2067,18 +2010,18 @@ def process_file(nmon_file, output_dir):
     os.makedirs(out_all_dir, exist_ok=True)
     all_path = os.path.join(out_all_dir, f"{base_name}_all.json")
     write_ndjson(all_docs, all_path)
-    print(f"Wrote {{len(all_docs)}} docs => {{all_path}}")
+    print(f"Wrote {len(all_docs)} docs => {all_path}")
 
     out_top_dir = os.path.join(output_dir, "top")
     os.makedirs(out_top_dir, exist_ok=True)
     top_path = os.path.join(out_top_dir, f"{base_name}_top.json")
     write_ndjson(top_docs, top_path)
-    print(f"Wrote {{len(top_docs)}} top docs => {{top_path}}")
+    print(f"Wrote {len(top_docs)} top docs => {top_path}")
 
     return (node, all_docs, top_docs)
 
 ################################################################################
-# 6. main => parse => build => single HTML (16 + 5 = 22 charts total)
+# 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS chart)
 ################################################################################
 
 def main():
@@ -2093,7 +2036,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     nmon_files = glob.glob(os.path.join(args.input_dir, "*.nmon"))
     if not nmon_files:
-        print(f"No .nmon files found in {{args.input_dir}}")
+        print(f"No .nmon files found in {args.input_dir}")
         return
 
     lpar_data_map = {}
