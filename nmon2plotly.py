@@ -43,6 +43,7 @@ def parse_nmon_file(nmon_file):
     top_data_by_tag = {}
     memnew_data_by_tag = {}
     mem_data_by_tag = {}
+    mem_mb_data_by_tag = {}      # NEW: For MEM values in MB
     net_data_by_tag  = {}
     netpacket_data_by_tag = {}
     zzzz_map = {}
@@ -99,6 +100,12 @@ def parse_nmon_file(nmon_file):
     sea_header_parsed = False
     sea_header = []
     sea_data_by_tag = {}
+
+    # --- NEW: For SEAPACKET (SEA Packets/s metrics) ---
+    # Only lines that start with SEAPACKET and whose second field starts with T (e.g., "SEAPACKET,T0001")
+    seapacket_header_parsed = False
+    seapacket_header = []
+    seapacket_data_by_tag = {}
 
     base_name = os.path.splitext(os.path.basename(nmon_file))[0]
     file_io_header_parsed = False
@@ -187,10 +194,12 @@ def parse_nmon_file(nmon_file):
                             cpu_val = 0.0
                             if cpu_str.strip():
                                 cpu_val = float(cpu_str)
+                            # NEW: Add PID (from column 2) along with Command and %CPU.
                             top_data_by_tag.setdefault(tag, [])
                             top_data_by_tag[tag].append({
                                 '%CPU': cpu_val,
-                                'Command': cmd_str
+                                'Command': cmd_str,
+                                'PID': parts[1]
                             })
                         except:
                             pass
@@ -229,10 +238,11 @@ def parse_nmon_file(nmon_file):
                     except:
                         pass
                     continue
-                # MEM => parse Real/Virtual used% (computed from free%)
+                # MEM => parse Real/Virtual used% (computed from free%) and add new MB parsing
                 if key == 'MEM' and len(parts) > 1 and parts[1].startswith('T'):
                     tag = parts[1]
                     try:
+                        # Calculate percentages from free percentages
                         real_free_p = float(parts[2]) if parts[2].strip() else 0.0
                         virt_free_p = float(parts[3]) if parts[3].strip() else 0.0
                         real_used_p = 100.0 - real_free_p
@@ -240,6 +250,21 @@ def parse_nmon_file(nmon_file):
                         mem_data_by_tag[tag] = {
                             'Real_Used%':    real_used_p,
                             'Virtual_Used%': virt_used_p
+                        }
+                        # NEW: Parse MB values (columns 4-7)
+                        real_free_mb = float(parts[4]) if parts[4].strip() else 0.0
+                        virt_free_mb = float(parts[5]) if parts[5].strip() else 0.0
+                        real_total_mb = float(parts[6]) if parts[6].strip() else 0.0
+                        virt_total_mb = float(parts[7]) if parts[7].strip() else 0.0
+                        real_used_mb = real_total_mb - real_free_mb
+                        virt_used_mb = virt_total_mb - virt_free_mb
+                        mem_mb_data_by_tag[tag] = {
+                            'Real_Free_MB': real_free_mb,
+                            'Virtual_Free_MB': virt_free_mb,
+                            'Real_Total_MB': real_total_mb,
+                            'Virtual_Total_MB': virt_total_mb,
+                            'Real_Used_MB': real_used_mb,
+                            'Virtual_Used_MB': virt_used_mb
                         }
                     except:
                         pass
@@ -530,9 +555,30 @@ def parse_nmon_file(nmon_file):
                             d[col_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
                         sea_data_by_tag[tag] = d
                         continue
+                # -------------------------
+                # NEW: SEAPACKET (SEA Packets/s metrics)
+                # -------------------------
+                if key == 'SEAPACKET':
+                    if (not seapacket_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        seapacket_header = parts[2:]
+                        seapacket_header_parsed = True
+                        continue
+                    if len(parts) > 1 and parts[1].startswith('T') and seapacket_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, col_name in enumerate(seapacket_header):
+                            d[col_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        seapacket_data_by_tag[tag] = d
+                        continue
     if not node:
         node = base_name
-    # Return all parsed data including the new memuse_data_by_tag, paging data, and sea_data_by_tag
+    # Return all parsed data including the new mem_mb_data_by_tag, paging data, sea_data_by_tag, and seapacket_data_by_tag
     return (
         cpu_data_by_tag,
         lpar_data_by_tag,
@@ -543,6 +589,7 @@ def parse_nmon_file(nmon_file):
         node,
         memnew_data_by_tag,
         mem_data_by_tag,
+        mem_mb_data_by_tag,  # NEW: MEM MB data
         net_data_by_tag,
         netpacket_data_by_tag,
         diskread_data_by_tag,
@@ -554,9 +601,10 @@ def parse_nmon_file(nmon_file):
         vgbusy_data_by_tag,
         vgsize_data_by_tag,
         jfsfile_data_by_tag,
-        memuse_data_by_tag,   # <<--- new FS Cache Memory Use data added here
-        page_data_by_tag,     # <<--- new paging data added here
-        sea_data_by_tag       # <<--- new SEA data added here
+        memuse_data_by_tag,   # NEW: FS Cache Memory Use data
+        page_data_by_tag,     # NEW: Paging data
+        sea_data_by_tag,      # NEW: SEA data
+        seapacket_data_by_tag # NEW: SEA Packets/s data
     )
 
 ################################################################################
@@ -647,7 +695,7 @@ def build_top_docs(top_data_by_tag, zzzz_map):
             continue
         for rec in item_list:
             doc = {"@timestamp": dt}
-            doc.update(rec)  # '%CPU', 'Command'
+            doc.update(rec)  # '%CPU', 'Command', and now 'PID'
             top_docs.append(doc)
     return top_docs
 
@@ -663,7 +711,10 @@ def write_ndjson(docs, filepath):
 #    + linked zoom (autoscale linking fixed)
 #    + NEW: added paging chart, FS Cache Memory Use (numperm) Percentage chart,
 #           unstacked SEA (READ/WRITE (KB/s)) chart,
-#           and NEW: SEA Read/Write - Stacked (KB/s) chart.
+#           SEA Read/Write - Stacked (KB/s) chart,
+#           NEW: SEA Packets/s chart,
+#           NEW: MEM MB chart,
+#           and now 2 new charts for Top 20 Process PIDs by CPU.
 ################################################################################
 
 def generate_html_page(lpar_data_map, top_data_map, output_html):
@@ -671,12 +722,15 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     Original charts: 16 charts + 5 new DISK/VG charts.
     Added:
       (1) Linked Zoom: any zoom/pan on one chart auto-updates all others.
-          A lock (relayoutLock) is used to avoid recursive autoscale loops.
       (2) The Reset Zoom button is removed.
       (3) NEW: A new line chart "FS Cache Memory Use (numperm) Percentage" is added after the TOP Commands by %CPU chart.
       (4) NEW: Paging chart ("All Paging per second") is added after the Swap-in plot.
       (5) NEW: SEA (READ/WRITE (KB/s)) chart is added.
       (6) NEW: SEA Read/Write - Stacked (KB/s) chart is added.
+      (7) NEW: SEA Packets/s chart is added.
+      (8) NEW: A new MEM MB chart is added after the Memory Usage (MEMNEW) chart.
+      (9) NEW: Two new charts "Top 20 Process PIDs by CPU" (unstacked) and 
+             "Top 20 Process PIDs by CPU (Stacked)" are added just after the TOP Commands chart.
     """
     embedded_all = json.dumps(lpar_data_map)
     embedded_top = json.dumps(top_data_map)
@@ -777,10 +831,16 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="fileio_chart"></div></div>
     <!-- 8) TOP chart -->
     <div class="chart-container"><div id="top_cpu_chart"></div></div>
+    <!-- NEW: Top 20 Process PIDs by CPU chart (Unstacked) -->
+    <div class="chart-container"><div id="top_pid_chart"></div></div>
+    <!-- NEW: Top 20 Process PIDs by CPU (Stacked) chart -->
+    <div class="chart-container"><div id="top_pid_stacked_chart"></div></div>
     <!-- NEW: FS Cache Memory Use (numperm) Percentage chart -->
     <div class="chart-container"><div id="fs_cache_chart"></div></div>
     <!-- 9) MEMNEW chart -->
     <div class="chart-container"><div id="memnew_chart"></div></div>
+    <!-- NEW: MEM MB Usage chart -->
+    <div class="chart-container"><div id="mem_mb_chart"></div></div>
     <!-- 10) MEM used% chart -->
     <div class="chart-container"><div id="memused_chart"></div></div>
     <!-- 11) Swap-in chart -->
@@ -821,12 +881,14 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="sea_chart"></div></div>
     <!-- NEW: SEA Read/Write - Stacked (KB/s) chart -->
     <div class="chart-container"><div id="sea_stacked_chart"></div></div>
+    <!-- NEW: SEA Packets/s chart -->
+    <div class="chart-container"><div id="sea_packet_chart"></div></div>
   </div>
   <script>
     const lparDataMap = {embedded_all};
     const topDataMap  = {embedded_top};
 
-    // Global array for chart div IDs; note the new "sea_stacked_chart" is included.
+    // Global array for chart div IDs; note the new "top_pid_chart" and "top_pid_stacked_chart" are inserted after "top_cpu_chart".
     const chartIds = [
       "cpu_usage_chart",
       "lpar_usage_chart",
@@ -836,8 +898,11 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "fork_exec_chart",
       "fileio_chart",
       "top_cpu_chart",
+      "top_pid_chart",
+      "top_pid_stacked_chart",
       "fs_cache_chart",
       "memnew_chart",
+      "mem_mb_chart",
       "memused_chart",
       "swapin_chart",
       "paging_chart",
@@ -857,7 +922,8 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "vg_busy_chart",
       "jfs_percent_full_chart",
       "sea_chart",
-      "sea_stacked_chart"
+      "sea_stacked_chart",
+      "sea_packet_chart"
     ];
 
     // Global flag to avoid recursive relayout events
@@ -1051,28 +1117,41 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         yaxis: {{ title: 'Bytes', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('fileio_chart'));
 
-      // 8) TOP CPU
+      // 8) TOP CPU - modified to align with ksh logic (by Command)
       const topdocs = getFilteredTopDocs();
       if (!topdocs.length) {{
         document.getElementById("top_cpu_chart").innerHTML = "<p>No TOP data</p>";
       }} else {{
-        const byCmd = {{}};
+        // Group by timestamp with keys as Command
+        let dataByTimestamp = {{}};
+        let commandsSet = new Set();
         for (const td of topdocs) {{
-          const dt = new Date(td["@timestamp"]);
-          const cval = td["%CPU"] || 0;
-          const cmd  = td["Command"] || "unknown";
-          if (!byCmd[cmd]) {{
-            byCmd[cmd] = {{ x: [], y: [] }};
+          const tsStr = td["@timestamp"];
+          const time = parseTimestamp(tsStr);
+          const cpuVal = td["%CPU"] || 0;
+          const cmd = td["Command"] || "unknown";
+          commandsSet.add(cmd);
+          if (!(tsStr in dataByTimestamp)) {{
+            dataByTimestamp[tsStr] = {{ time: time, commands: {{}} }};
           }}
-          byCmd[cmd].x.push(dt);
-          byCmd[cmd].y.push(cval);
+          dataByTimestamp[tsStr].commands[cmd] = (dataByTimestamp[tsStr].commands[cmd] || 0) + cpuVal;
         }}
-        const traces = [];
-        for (const [cmd, arr] of Object.entries(byCmd)) {{
+        let sortedTimestampsKeys = Object.keys(dataByTimestamp).sort((a, b) => {{
+          return dataByTimestamp[a].time - dataByTimestamp[b].time;
+        }});
+        let sortedCommands = Array.from(commandsSet).sort();
+        let traces = [];
+        for (const command of sortedCommands) {{
+          let xArr = [];
+          let yArr = [];
+          for (const tsKey of sortedTimestampsKeys) {{
+            xArr.push(dataByTimestamp[tsKey].time);
+            yArr.push(dataByTimestamp[tsKey].commands[command] || 0);
+          }}
           traces.push({{
-            x: arr.x,
-            y: arr.y,
-            name: cmd,
+            x: xArr,
+            y: yArr,
+            name: command,
             mode: 'lines'
           }});
         }}
@@ -1082,6 +1161,82 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
           yaxis: {{ title: '%CPU (per process)', rangemode: 'tozero' }}
         }}).then(gd => linkCharts('top_cpu_chart'));
       }}
+
+      // NEW: Top 20 Process PIDs by CPU (Unstacked)
+      // Aggregate total CPU per PID over the period
+      let totalByPid = {{}};
+      for (const td of topdocs) {{
+          const pid = td["PID"] || "unknown";
+          const cpu = td["%CPU"] || 0;
+          totalByPid[pid] = (totalByPid[pid] || 0) + cpu;
+      }}
+      // Get the top 20 PIDs by total CPU usage
+      let topPIDs = Object.keys(totalByPid)
+                          .sort((a, b) => totalByPid[b] - totalByPid[a])
+                          .slice(0, 20);
+      // Group by timestamp using PID as key
+      let dataByTimestampPID = {{}};
+      for (const td of topdocs) {{
+          const tsStr = td["@timestamp"];
+          const time = parseTimestamp(tsStr);
+          const cpu = td["%CPU"] || 0;
+          const pid = td["PID"] || "unknown";
+          if (!topPIDs.includes(pid)) continue;
+          if (!(tsStr in dataByTimestampPID)) {{
+              dataByTimestampPID[tsStr] = {{ time: time, pids: {{}} }};
+          }}
+          dataByTimestampPID[tsStr].pids[pid] = (dataByTimestampPID[tsStr].pids[pid] || 0) + cpu;
+      }}
+      let sortedTimestampsPID = Object.keys(dataByTimestampPID).sort((a, b) => {{
+          return dataByTimestampPID[a].time - dataByTimestampPID[b].time;
+      }});
+      let pidTraces = [];
+      for (const pid of topPIDs) {{
+         let xArr = [];
+         let yArr = [];
+         for (const ts of sortedTimestampsPID) {{
+             xArr.push(dataByTimestampPID[ts].time);
+             yArr.push(dataByTimestampPID[ts].pids[pid] || 0);
+         }}
+         pidTraces.push({{
+              x: xArr,
+              y: yArr,
+              name: pid,
+              mode: 'lines'
+         }});
+      }}
+      Plotly.newPlot('top_pid_chart', pidTraces, {{
+          title: 'Top 20 Process PIDs by CPU (' + lparSelect.value + ')',
+          xaxis: {{ title: 'Time' }},
+          yaxis: {{ title: '%CPU (per process)', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('top_pid_chart'));
+
+      // NEW: Top 20 Process PIDs by CPU (Stacked)
+      let stackedPidTraces = [];
+      let counter = 0;
+      for (const pid of topPIDs) {{
+         let xArr = [];
+         let yArr = [];
+         for (const ts of sortedTimestampsPID) {{
+             xArr.push(dataByTimestampPID[ts].time);
+             yArr.push(dataByTimestampPID[ts].pids[pid] || 0);
+         }}
+         let fillMode = (counter === 0) ? 'tozeroy' : 'tonexty';
+         stackedPidTraces.push({{
+             x: xArr,
+             y: yArr,
+             name: pid,
+             mode: 'lines',
+             stackgroup: 'pid_stacked',
+             fill: fillMode
+         }});
+         counter++;
+      }}
+      Plotly.newPlot('top_pid_stacked_chart', stackedPidTraces, {{
+          title: 'Top 20 Process PIDs by CPU (Stacked) (' + lparSelect.value + ')',
+          xaxis: {{ title: 'Time' }},
+          yaxis: {{ title: '%CPU (per process)', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('top_pid_stacked_chart'));
 
       // NEW: FS Cache Memory Use (numperm) Percentage chart
       const numpermVals = docs.map(d => d.memuse ? d.memuse["numperm"] : 0);
@@ -1112,6 +1267,22 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         xaxis: {{ title: 'Time' }},
         yaxis: {{ title: 'Percentage', range: [0, 100] }}
       }}).then(gd => linkCharts('memnew_chart'));
+
+      // NEW: MEM MB chart
+      const realTotal = docs.map(d => d.mem_mb ? d.mem_mb["Real_Total_MB"] : 0);
+      const virtTotal = docs.map(d => d.mem_mb ? d.mem_mb["Virtual_Total_MB"] : 0);
+      const realUsedMB = docs.map(d => d.mem_mb ? d.mem_mb["Real_Used_MB"] : 0);
+      const virtUsedMB = docs.map(d => d.mem_mb ? d.mem_mb["Virtual_Used_MB"] : 0);
+      Plotly.newPlot('mem_mb_chart', [
+        {{ x: times, y: realTotal, mode: 'lines', name: 'Real Total (MB)' }},
+        {{ x: times, y: virtTotal, mode: 'lines', name: 'Virtual Total (MB)' }},
+        {{ x: times, y: realUsedMB, mode: 'lines', fill: 'tozeroy', name: 'Real Used (MB)' }},
+        {{ x: times, y: virtUsedMB, mode: 'lines', fill: 'tozeroy', name: 'Virtual Used (MB)' }}
+      ], {{
+        title: 'Memory Usage (MB) (MEM) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Memory (MB)' }}
+      }}).then(gd => linkCharts('mem_mb_chart'));
 
       // 10) MEM used%
       const realUsed = docs.map(d => d.mem ? d.mem["Real_Used%"]    : 0);
@@ -1920,7 +2091,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
           for (const colName in d.sea) {{
             // Expecting keys like "ent25-read-KB/s" or "ent25-write-KB/s"
             const parts = colName.split('-');
-            const iface = parts[0]; // e.g. "ent25"
+            const iface = parts[0];
             const metric = parts[1];
             if (!seaTracesByInterface[iface]) {{
               seaTracesByInterface[iface] = {{ read: {{ x: [], y: [] }}, write: {{ x: [], y: [] }} }};
@@ -1989,6 +2160,52 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
          xaxis: {{ title: 'Time', range: xRange }},
          yaxis: {{ title: 'KB/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('sea_stacked_chart'));
+
+      // NEW: SEA Packets/s chart
+      const seapacketTracesByInterface = {{}};
+      docs.forEach(d => {{
+        if (d.seapacket) {{
+          const time = parseTimestamp(d["@timestamp"]);
+          for (const colName in d.seapacket) {{
+            // Expecting keys like "ent25-reads/s" or "ent25-writes/s"
+            const parts = colName.split('-');
+            const iface = parts[0];
+            const metric = parts[1];
+            if (!seapacketTracesByInterface[iface]) {{
+              seapacketTracesByInterface[iface] = {{ read: {{ x: [], y: [] }}, write: {{ x: [], y: [] }} }};
+            }}
+            if(metric.startsWith("read")) {{
+              seapacketTracesByInterface[iface].read.x.push(time);
+              seapacketTracesByInterface[iface].read.y.push(d.seapacket[colName]);
+            }} else if(metric.startsWith("write")) {{
+              seapacketTracesByInterface[iface].write.x.push(time);
+              seapacketTracesByInterface[iface].write.y.push(-Math.abs(d.seapacket[colName]));
+            }}
+          }}
+        }}
+      }});
+      const seapacketTraces = [];
+      for (const iface in seapacketTracesByInterface) {{
+        seapacketTraces.push({{
+          x: seapacketTracesByInterface[iface].read.x,
+          y: seapacketTracesByInterface[iface].read.y,
+          mode: 'lines',
+          name: iface + " read"
+        }});
+        seapacketTraces.push({{
+          x: seapacketTracesByInterface[iface].write.x,
+          y: seapacketTracesByInterface[iface].write.y,
+          mode: 'lines',
+          name: iface + " write",
+          legendgroup: iface,
+          showlegend: false
+        }});
+      }}
+      Plotly.newPlot('sea_packet_chart', seapacketTraces, {{
+         title: 'SEA Packets/s (' + lparSelect.value + ')',
+         xaxis: {{ title: 'Time', range: xRange }},
+         yaxis: {{ title: 'Packets/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('sea_packet_chart'));
     }}
 
     function applyFilter() {{
@@ -2006,7 +2223,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
 
     with open(output_html, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print("Wrote HTML (16 existing charts + 5 new DISK/VG charts, plus new Paging, FS Cache, unstacked SEA and stacked SEA charts) to:", output_html)
+    print("Wrote HTML (16 existing charts + DISK/VG charts, plus new Paging, FS Cache, unstacked SEA, stacked SEA, SEA Packets/s, MEM MB, and Top PID charts) to:", output_html)
 
 ################################################################################
 # 5. process_file => parse => NDJSON => return
@@ -2023,6 +2240,7 @@ def process_file(nmon_file, output_dir):
         node,
         memnew_data_by_tag,
         mem_data_by_tag,
+        mem_mb_data_by_tag,  # NEW: MEM MB data
         net_data_by_tag,
         netpacket_data_by_tag,
         diskread_data_by_tag,
@@ -2036,7 +2254,8 @@ def process_file(nmon_file, output_dir):
         jfsfile_data_by_tag,
         memuse_data_by_tag,   # NEW: FS Cache Memory Use data
         page_data_by_tag,     # NEW: Paging data
-        sea_data_by_tag       # NEW: SEA data
+        sea_data_by_tag,      # NEW: SEA data
+        seapacket_data_by_tag # NEW: SEA Packets/s data
     ) = parse_nmon_file(nmon_file)
 
     # --- Already-existing logic for "fc" read/write and "netsize" --- 
@@ -2197,6 +2416,12 @@ def process_file(nmon_file, output_dir):
         # NEW: add SEA data if available
         if the_tag and the_tag in sea_data_by_tag:
             d["sea"] = sea_data_by_tag[the_tag]
+        # NEW: add SEA Packets/s data if available
+        if the_tag and the_tag in seapacket_data_by_tag:
+            d["seapacket"] = seapacket_data_by_tag[the_tag]
+        # NEW: add MEM MB data if available
+        if the_tag and the_tag in mem_mb_data_by_tag:
+            d["mem_mb"] = mem_mb_data_by_tag[the_tag]
     top_docs = build_top_docs(top_data_by_tag, zzzz_map)
 
     base_name = os.path.splitext(os.path.basename(nmon_file))[0]
@@ -2215,7 +2440,7 @@ def process_file(nmon_file, output_dir):
     return (node, all_docs, top_docs)
 
 ################################################################################
-# 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA and SEA Stacked charts)
+# 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA, SEA Stacked, SEA Packets/s, MEM MB, and Top PID charts)
 ################################################################################
 
 def main():
