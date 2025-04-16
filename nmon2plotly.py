@@ -774,6 +774,11 @@ def write_ndjson(docs, filepath):
 #
 #   NEW: A new bubble chart for TOPSUM (mimicking the nmonchart ksh script bubble chart) is added
 #        just before the TOP Commands by %CPU chart.
+#
+#   ***** Added DARK MODE toggle: the HTML now includes a sun/moon toggle in the top-right corner.
+#         When clicked, it toggles a CSS dark-mode class on the body and calls Plotly.relayout
+#         on every chart (using the global chartIds array) to update their background and font colors.
+#
 ################################################################################
 
 def generate_html_page(lpar_data_map, top_data_map, output_html):
@@ -798,6 +803,9 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
              immediately after the fork() & exec() chart.
       (13) NEW: A new bubble chart for TOPSUM (Total CPU, Char I/O, Max Memory per Command)
              is added just before the TOP Commands by %CPU chart.
+      (14) NEW: DARK MODE TOGGLE: a sun/moon switch is added in the top-right corner. When clicked,
+             it toggles a CSS dark-mode class on the body and calls Plotly.relayout on all charts to
+             update their theme.
     """
     embedded_all = json.dumps(lpar_data_map)
     embedded_top = json.dumps(top_data_map)
@@ -844,10 +852,77 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       display: block;
       clear: both;
     }}
+    /* Dark mode styles */
+    body.dark-mode {{
+      background-color: #0d1b2a;
+      color: white;
+      transition: background 0.3s, color 0.3s;
+    }}
+    .toggle-container {{
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      z-index : 9999 ; 
+    }}
+    .toggle {{
+      width: 60px;
+      height: 30px;
+      background: #ddd;
+      border-radius: 30px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.3s;
+    }}
+    .toggle.dark {{
+      background: #333;
+    }}
+    .toggle .slider {{
+      width: 26px;
+      height: 26px;
+      background: white;
+      border-radius: 50%;
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      transition: all 0.3s;
+    }}
+    .toggle.dark .slider {{
+      left: 32px;
+      background: #000;
+    }}
+    .icon {{
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 14px;
+      color: #555;
+      pointer-events: none;
+    }}
+    .sun {{
+      left: 10px;
+    }}
+    .moon {{
+      right: 10px;
+      color: #fff;
+    }}
+    .toggle.dark .sun {{
+      color: #fff;
+    }}
+    .toggle.dark .moon {{
+      color: #999;
+    }}
   </style>
 </head>
 <body>
   <img src="nmon2plotly.png" alt="nmon2plotly logo" class="logo" />
+  <!-- DARK MODE TOGGLE (added) -->
+  <div class="toggle-container">
+    <div class="toggle" id="modeToggle">
+      <div class="slider"></div>
+      <div class="icon sun">☀️</div>
+      <div class="icon moon">🌙</div>
+    </div>
+  </div>
   <div class="menu">
     <label for="lpar_select">Select LPAR:</label>
     <select id="lpar_select"></select>
@@ -2213,7 +2288,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         }});
       }}
       Plotly.newPlot('vg_read_write_chart', vgRWTraces, {{
-        title: 'VG Read/Write (KB/s)',
+        title: 'VG Read/Write (KB/s) (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time', range: xRange }},
         yaxis: {{ title: 'KB/s' }}
       }}).then(gd => linkCharts('vg_read_write_chart'));
@@ -2261,7 +2336,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         vgWriteIndex++;
       }}
       Plotly.newPlot('vg_read_write_stacked_chart', vgStackedTraces, {{
-        title: 'VG Read/Write - Stacked (KB/s)',
+        title: 'VG Read/Write - Stacked (KB/s) (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time', range: xRange }},
         yaxis: {{ title: 'KB/s' }}
       }}).then(gd => linkCharts('vg_read_write_stacked_chart'));
@@ -2456,6 +2531,30 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     document.getElementById("chartsPerRow").addEventListener("change", renderCharts);
     lparSelect.addEventListener("change", renderCharts);
 
+    // ***** DARK MODE TOGGLE CODE (added) *****
+    const modeToggle = document.getElementById("modeToggle");
+    modeToggle.addEventListener("click", () => {{
+         document.body.classList.toggle("dark-mode");
+         modeToggle.classList.toggle("dark");
+         const darkMode = document.body.classList.contains("dark-mode");
+         const layoutUpdate = darkMode ? {{
+            "paper_bgcolor": "#0d1b2a",
+            "plot_bgcolor": "#0d1b2a",
+            "font": {{"color": "white"}}
+         }} : {{
+            "paper_bgcolor": "white",
+            "plot_bgcolor": "white",
+            "font": {{"color": "black"}}
+         }};
+         chartIds.forEach(function(chartId) {{
+             var chartDiv = document.getElementById(chartId);
+             if(chartDiv) {{
+                 Plotly.relayout(chartDiv, layoutUpdate);
+             }}
+         }});
+    }});
+    // ***** End DARK MODE TOGGLE CODE *****
+
     // initial rendering, then link all charts
     renderCharts();
   </script>
@@ -2464,7 +2563,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
 
     with open(output_html, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print("Wrote HTML (16 existing charts + DISK/VG charts, plus new Paging, FS Cache, unstacked SEA, stacked SEA, SEA Packets/s, MEM MB, Top PID, CPU Use, Bubble and InterProcess Comms charts) to:", output_html)
+    print("Wrote HTML (16 existing charts + DISK/VG charts, plus new Paging, FS Cache, unstacked SEA, stacked SEA, SEA Packets/s, MEM MB, Top PID, CPU Use, Bubble and InterProcess Comms charts, and DARK MODE toggle) to:", output_html)
 
 ################################################################################
 # 5. process_file => parse => NDJSON => return
