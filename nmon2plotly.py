@@ -217,17 +217,33 @@ def parse_nmon_file(nmon_file):
                     if possible_tag.startswith('T'):
                         tag = possible_tag
                         try:
-                            cpu_str = parts[3]  if len(parts) > 3 else "0"
+                            cpu_str = parts[3] if len(parts) > 3 else "0"
                             cmd_str = parts[13] if len(parts) > 13 else "?"
                             cpu_val = 0.0
                             if cpu_str.strip():
                                 cpu_val = float(cpu_str)
-                            # NEW: Add PID (from column 2) along with Command and %CPU.
+                            # NEW: Add additional fields for the bubble chart:
+                            #   - CharIO is taken from field index 10.
+                            #   - Memory usage is calculated as the sum of fields at index 8 and 9.
+                            chario_val = 0.0
+                            mem_usage_val = 0.0
+                            if len(parts) > 10:
+                                try:
+                                    chario_val = float(parts[10])
+                                except:
+                                    pass
+                            if len(parts) > 9:
+                                try:
+                                    mem_usage_val = float(parts[8]) + float(parts[9])
+                                except:
+                                    pass
                             top_data_by_tag.setdefault(tag, [])
                             top_data_by_tag[tag].append({
                                 '%CPU': cpu_val,
                                 'Command': cmd_str,
-                                'PID': parts[1]
+                                'PID': parts[1],
+                                'CharIO': chario_val,
+                                'Memory': mem_usage_val
                             })
                         except:
                             pass
@@ -725,7 +741,7 @@ def build_top_docs(top_data_by_tag, zzzz_map):
             continue
         for rec in item_list:
             doc = {"@timestamp": dt}
-            doc.update(rec)  # '%CPU', 'Command', and now 'PID'
+            doc.update(rec)  # '%CPU', 'Command', 'PID', 'CharIO', and 'Memory'
             top_docs.append(doc)
     return top_docs
 
@@ -755,6 +771,9 @@ def write_ndjson(docs, filepath):
 #
 #   NEW: A new graph "InterProcess Comms - Semaphores/s & Message Queues send/s" is added.
 #        It is inserted after the "fork() & exec()" graph.
+#
+#   NEW: A new bubble chart for TOPSUM (mimicking the nmonchart ksh script bubble chart) is added
+#        just before the TOP Commands by %CPU chart.
 ################################################################################
 
 def generate_html_page(lpar_data_map, top_data_map, output_html):
@@ -777,6 +796,8 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
              is added immediately after the overall CPU Usage chart.
       (12) NEW: A new graph "InterProcess Comms - Semaphores/s & Message Queues send/s" is added
              immediately after the fork() & exec() chart.
+      (13) NEW: A new bubble chart for TOPSUM (Total CPU, Char I/O, Max Memory per Command)
+             is added just before the TOP Commands by %CPU chart.
     """
     embedded_all = json.dumps(lpar_data_map)
     embedded_top = json.dumps(top_data_map)
@@ -879,7 +900,9 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <!-- NEW: InterProcess Comms - Semaphores/s & Message Queues send/s chart -->
     <div class="chart-container"><div id="sem_msg_chart"></div></div>
     <div class="chart-container"><div id="fileio_chart"></div></div>
-    <!-- 8) TOP CPU chart -->
+    <!-- NEW: TOPSUM Bubble Chart -->
+    <div class="chart-container"><div id="top_bubble_chart"></div></div>
+    <!-- 8) TOP CPU - modified to align with ksh logic (by Command) -->
     <div class="chart-container"><div id="top_cpu_chart"></div></div>
     <!-- NEW: TOP Commands by %CPU (Stacked) chart -->
     <div class="chart-container"><div id="top_cpu_stacked_chart"></div></div>
@@ -940,8 +963,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     const lparDataMap = {embedded_all};
     const topDataMap  = {embedded_top};
 
-    // Global array for chart div IDs; note the new "cpu_use_chart" is inserted after "cpu_usage_chart",
-    // the new "sem_msg_chart" is inserted after "fork_exec_chart", and the new stacked charts are already in place.
+    // Global array for chart div IDs; note the new "top_bubble_chart" is inserted right after "fileio_chart".
     const chartIds = [
       "cpu_usage_chart",
       "cpu_use_chart",
@@ -952,6 +974,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "fork_exec_chart",
       "sem_msg_chart",
       "fileio_chart",
+      "top_bubble_chart",
       "top_cpu_chart",
       "top_cpu_stacked_chart",
       "top_pid_chart",
@@ -1238,8 +1261,64 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         yaxis: {{ title: 'Bytes', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('fileio_chart'));
 
-      // 8) TOP CPU - modified to align with ksh logic (by Command)
+      // NEW: TOPSUM Bubble Chart for TOP data (aggregated by Command)
       const topdocs = getFilteredTopDocs();
+      if (!topdocs.length) {{
+         document.getElementById("top_bubble_chart").innerHTML = "<p>No TOP data</p>";
+      }} else {{
+         let bubbleData = {{}};
+         topdocs.forEach(function(td) {{
+              let cmd = td["Command"] || "unknown";
+              let cpuVal = td["%CPU"] || 0;
+              let charioVal = td["CharIO"] || 0;
+              let memVal = td["Memory"] || 0;
+              if (!(cmd in bubbleData)) {{
+                  bubbleData[cmd] = {{ cpu: 0, chario: 0, mem: 0 }};
+              }}
+              bubbleData[cmd].cpu += cpuVal;
+              bubbleData[cmd].chario += charioVal;
+              if (memVal > bubbleData[cmd].mem) {{
+                  bubbleData[cmd].mem = memVal;
+              }}
+         }});
+         let bubbleArray = [];
+         for (let cmd in bubbleData) {{
+              bubbleArray.push({{ command: cmd, cpu: bubbleData[cmd].cpu, chario: bubbleData[cmd].chario / 1024, mem: bubbleData[cmd].mem }});
+         }}
+         bubbleArray.sort((a, b) => b.cpu - a.cpu);
+         bubbleArray = bubbleArray.slice(0, 20);
+         let maxSize = Math.max(...bubbleArray.map(item => item.mem));
+         let bubbleTraces = bubbleArray.map(item => {{
+              return {{
+                x: [item.cpu],
+                y: [item.chario],
+                text: [item.command],
+                name: item.command,
+                mode: 'markers',
+                marker: {{
+                  size: [item.mem],
+                  sizemode: 'area',
+                  sizeref: 2.0 * maxSize / (100**2),
+                  sizemin: 4
+                }},
+                hovertemplate: 'Command: %{{text}}<br>CPU: %{{x:.1f}}<br>Char I/O: %{{y:.1f}} KB<br>Memory: %{{marker.size}} KB<extra></extra>'
+              }};
+         }});
+         Plotly.newPlot('top_bubble_chart', bubbleTraces, {{
+              title: 'Top 20 Processes by CPU Correlation (Total CPU Seconds, Character I/O, Max Memory Size)',
+              xaxis: {{ title: 'CPU seconds in Total' }},
+              yaxis: {{ title: 'Character I/O in Total (KB)' }},
+              legend: {{
+                  x: 1.05,
+                  y: 1,
+                  orientation: "v",
+                  font: {{ size: 10 }}
+              }},
+              margin: {{ t: 50, r: 150 }}
+         }}).then(gd => linkCharts('top_bubble_chart'));
+      }}
+
+      // 8) TOP CPU - modified to align with ksh logic (by Command)
       if (!topdocs.length) {{
         document.getElementById("top_cpu_chart").innerHTML = "<p>No TOP data</p>";
       }} else {{
@@ -1332,18 +1411,15 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       }}
 
       // NEW: Top 20 Process PIDs by CPU (Unstacked)
-      // Aggregate total CPU per PID over the period
       let totalByPid = {{}};
       for (const td of topdocs) {{
           const pid = td["PID"] || "unknown";
           const cpu = td["%CPU"] || 0;
           totalByPid[pid] = (totalByPid[pid] || 0) + cpu;
       }}
-      // Get the top 20 PIDs by total CPU usage
       let topPIDs = Object.keys(totalByPid)
                           .sort((a, b) => totalByPid[b] - totalByPid[a])
                           .slice(0, 20);
-      // Group by timestamp using PID as key
       let dataByTimestampPID = {{}};
       for (const td of topdocs) {{
           const tsStr = td["@timestamp"];
@@ -2388,7 +2464,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
 
     with open(output_html, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print("Wrote HTML (16 existing charts + DISK/VG charts, plus new Paging, FS Cache, unstacked SEA, stacked SEA, SEA Packets/s, MEM MB, Top PID, CPU Use, and InterProcess Comms charts) to:", output_html)
+    print("Wrote HTML (16 existing charts + DISK/VG charts, plus new Paging, FS Cache, unstacked SEA, stacked SEA, SEA Packets/s, MEM MB, Top PID, CPU Use, Bubble and InterProcess Comms charts) to:", output_html)
 
 ################################################################################
 # 5. process_file => parse => NDJSON => return
