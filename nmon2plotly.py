@@ -107,6 +107,11 @@ def parse_nmon_file(nmon_file):
     seapacket_header = []
     seapacket_data_by_tag = {}
 
+    # --- NEW: For CPU use (per logical CPU) ---
+    # This new branch parses lines like "CPU01,Txxxx,User%,Sys%,Wait%,Idle%"
+    # and accumulates User% and Sys% per CPU (only if User%+Sys% > 0.05).
+    cpu_use_data_by_tag = {}
+
     base_name = os.path.splitext(os.path.basename(nmon_file))[0]
     file_io_header_parsed = False
     file_io_columns = []
@@ -142,6 +147,25 @@ def parse_nmon_file(nmon_file):
                     except:
                         pass
                     continue
+                # NEW: CPU use per logical core from lines like "CPU01,Txxxx,..."
+                if re.match(r'^CPU\d+$', key) and len(parts) > 1 and parts[1].startswith('T'):
+                    try:
+                        cpu_number = key[len("CPU"):]  # e.g., "01"
+                        user_val = float(parts[2]) if parts[2].strip() else 0.0
+                        sys_val  = float(parts[3]) if parts[3].strip() else 0.0
+                        total = user_val + sys_val
+                        if total > 0.05:
+                            tag = parts[1]
+                            if tag not in cpu_use_data_by_tag:
+                                cpu_use_data_by_tag[tag] = {}
+                            if cpu_number not in cpu_use_data_by_tag[tag]:
+                                cpu_use_data_by_tag[tag][cpu_number] = {"user_sum": 0.0, "sys_sum": 0.0, "count": 0}
+                            cpu_use_data_by_tag[tag][cpu_number]["user_sum"] += user_val
+                            cpu_use_data_by_tag[tag][cpu_number]["sys_sum"] += sys_val
+                            cpu_use_data_by_tag[tag][cpu_number]["count"] += 1
+                    except:
+                        pass
+                    continue
                 # LPAR
                 if key == 'LPAR' and len(parts) > 1 and parts[1].startswith('T'):
                     tag = parts[1]
@@ -169,6 +193,8 @@ def parse_nmon_file(nmon_file):
                         write_val    = float(parts[7]) if parts[7].strip() else 0.0
                         fork_val     = float(parts[8]) if len(parts) > 8 and parts[8].strip() else 0.0
                         exec_val     = float(parts[9]) if len(parts) > 9 and parts[9].strip() else 0.0
+                        sem_val      = float(parts[10]) if len(parts) > 10 and parts[10].strip() else 0.0
+                        msg_val      = float(parts[11]) if len(parts) > 11 and parts[11].strip() else 0.0
                         proc_data_by_tag.setdefault(tag, {})
                         proc_data_by_tag[tag].update({
                             'Runnable': runnable_val,
@@ -178,7 +204,9 @@ def parse_nmon_file(nmon_file):
                             'Read':     read_val,
                             'Write':    write_val,
                             'fork':     fork_val,
-                            'exec':     exec_val
+                            'exec':     exec_val,
+                            'sem':      sem_val,
+                            'msg':      msg_val
                         })
                     except:
                         pass
@@ -578,7 +606,8 @@ def parse_nmon_file(nmon_file):
                         continue
     if not node:
         node = base_name
-    # Return all parsed data including the new mem_mb_data_by_tag, paging data, sea_data_by_tag, and seapacket_data_by_tag
+    # Return all parsed data including the new mem_mb_data_by_tag, paging data, sea_data_by_tag, and seapacket_data_by_tag,
+    # and now the new cpu_use_data_by_tag.
     return (
         cpu_data_by_tag,
         lpar_data_by_tag,
@@ -604,7 +633,8 @@ def parse_nmon_file(nmon_file):
         memuse_data_by_tag,   # NEW: FS Cache Memory Use data
         page_data_by_tag,     # NEW: Paging data
         sea_data_by_tag,      # NEW: SEA data
-        seapacket_data_by_tag # NEW: SEA Packets/s data
+        seapacket_data_by_tag, # NEW: SEA Packets/s data
+        cpu_use_data_by_tag   # NEW: CPU Use per logical CPU data
     )
 
 ################################################################################
@@ -715,6 +745,16 @@ def write_ndjson(docs, filepath):
 #           NEW: SEA Packets/s chart,
 #           NEW: MEM MB chart,
 #           and now 2 new charts for Top 20 Process PIDs by CPU.
+#           Also, the new interactive stacked chart "Average Use of Logical CPU Core Threads - POWER=SMT"
+#           is inserted immediately after the overall CPU Usage chart.
+#
+#   Modifications for the new "TOP Commands by %CPU (Stacked)" chart:
+#   - A new container is added right after the TOP Commands by %CPU container.
+#   - The chartIds array is updated to include "top_cpu_stacked_chart".
+#   - A new JavaScript block creates a stacked version of the TOP Commands by %CPU chart.
+#
+#   NEW: A new graph "InterProcess Comms - Semaphores/s & Message Queues send/s" is added.
+#        It is inserted after the "fork() & exec()" graph.
 ################################################################################
 
 def generate_html_page(lpar_data_map, top_data_map, output_html):
@@ -731,6 +771,12 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       (8) NEW: A new MEM MB chart is added after the Memory Usage (MEMNEW) chart.
       (9) NEW: Two new charts "Top 20 Process PIDs by CPU" (unstacked) and 
              "Top 20 Process PIDs by CPU (Stacked)" are added just after the TOP Commands chart.
+      (10) NEW: A new stacked chart "TOP Commands by %CPU (Stacked)" is added immediately
+             after the TOP Commands by %CPU chart.
+      (11) NEW: A new interactive stacked chart "Average Use of Logical CPU Core Threads - POWER=SMT"
+             is added immediately after the overall CPU Usage chart.
+      (12) NEW: A new graph "InterProcess Comms - Semaphores/s & Message Queues send/s" is added
+             immediately after the fork() & exec() chart.
     """
     embedded_all = json.dumps(lpar_data_map)
     embedded_top = json.dumps(top_data_map)
@@ -823,14 +869,20 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
   <!-- All charts in #chartsContainer -->
   <div id="chartsContainer">
     <div class="chart-container"><div id="cpu_usage_chart"></div></div>
+    <!-- NEW: Average Use of Logical CPU Core Threads - POWER=SMT (Stacked Bar Chart) -->
+    <div class="chart-container"><div id="cpu_use_chart"></div></div>
     <div class="chart-container"><div id="lpar_usage_chart"></div></div>
     <div class="chart-container"><div id="runnable_chart"></div></div>
     <div class="chart-container"><div id="syscall_chart"></div></div>
     <div class="chart-container"><div id="pswitch_chart"></div></div>
     <div class="chart-container"><div id="fork_exec_chart"></div></div>
+    <!-- NEW: InterProcess Comms - Semaphores/s & Message Queues send/s chart -->
+    <div class="chart-container"><div id="sem_msg_chart"></div></div>
     <div class="chart-container"><div id="fileio_chart"></div></div>
-    <!-- 8) TOP chart -->
+    <!-- 8) TOP CPU chart -->
     <div class="chart-container"><div id="top_cpu_chart"></div></div>
+    <!-- NEW: TOP Commands by %CPU (Stacked) chart -->
+    <div class="chart-container"><div id="top_cpu_stacked_chart"></div></div>
     <!-- NEW: Top 20 Process PIDs by CPU chart (Unstacked) -->
     <div class="chart-container"><div id="top_pid_chart"></div></div>
     <!-- NEW: Top 20 Process PIDs by CPU (Stacked) chart -->
@@ -888,16 +940,20 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     const lparDataMap = {embedded_all};
     const topDataMap  = {embedded_top};
 
-    // Global array for chart div IDs; note the new "top_pid_chart" and "top_pid_stacked_chart" are inserted after "top_cpu_chart".
+    // Global array for chart div IDs; note the new "cpu_use_chart" is inserted after "cpu_usage_chart",
+    // the new "sem_msg_chart" is inserted after "fork_exec_chart", and the new stacked charts are already in place.
     const chartIds = [
       "cpu_usage_chart",
+      "cpu_use_chart",
       "lpar_usage_chart",
       "runnable_chart",
       "syscall_chart",
       "pswitch_chart",
       "fork_exec_chart",
+      "sem_msg_chart",
       "fileio_chart",
       "top_cpu_chart",
+      "top_cpu_stacked_chart",
       "top_pid_chart",
       "top_pid_stacked_chart",
       "fs_cache_chart",
@@ -1044,6 +1100,59 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         yaxis: {{ title: 'Percentage' }}
       }}).then(gd => linkCharts('cpu_usage_chart'));
 
+      // NEW: Average Use of Logical CPU Core Threads - POWER=SMT (Stacked Bar Chart)
+      let cpuAgg = {{}};
+      docs.forEach(d => {{
+         if(d.cpu_use) {{
+              for (let cpu in d.cpu_use) {{
+                   if (!(cpu in cpuAgg)) {{
+                        cpuAgg[cpu] = {{ user_sum: 0, sys_sum: 0, count: 0 }};
+                   }}
+                   cpuAgg[cpu].user_sum += d.cpu_use[cpu].user;
+                   cpuAgg[cpu].sys_sum += d.cpu_use[cpu].sys;
+                   cpuAgg[cpu].count++;
+              }}
+         }}
+      }});
+      let cpuLabels = [];
+      let userAverages = [];
+      let sysAverages = [];
+      for (let cpu in cpuAgg) {{
+         let count = cpuAgg[cpu].count;
+         let avgUser = cpuAgg[cpu].user_sum / count;
+         let avgSys = cpuAgg[cpu].sys_sum / count;
+         if ((avgUser + avgSys) > 0.05) {{
+              cpuLabels.push("CPU" + cpu);
+              userAverages.push(avgUser);
+              sysAverages.push(avgSys);
+         }}
+      }}
+      let combined = cpuLabels.map((label, i) => ({{ cpu: label, user: userAverages[i], sys: sysAverages[i] }}));
+      combined.sort((a, b) => {{
+         return parseInt(a.cpu.replace("CPU","")) - parseInt(b.cpu.replace("CPU",""));
+      }});
+      cpuLabels = combined.map(item => item.cpu);
+      userAverages = combined.map(item => item.user);
+      sysAverages = combined.map(item => item.sys);
+      var traceUser = {{
+         x: cpuLabels,
+         y: userAverages,
+         name: 'User%',
+         type: 'bar'
+      }};
+      var traceSys = {{
+         x: cpuLabels,
+         y: sysAverages,
+         name: 'System%',
+         type: 'bar'
+      }};
+      Plotly.newPlot('cpu_use_chart', [traceUser, traceSys], {{
+         title: 'Average Use of Logical CPU Core Threads - POWER=SMT',
+         barmode: 'stack',
+         xaxis: {{ title: 'CPU Core' }},
+         yaxis: {{ title: '% Usage' }}
+      }}).then(gd => linkCharts('cpu_usage_chart'));
+
       // 2) LPAR usage
       const physVals = docs.map(d => d.lpar ? d.lpar["PhysicalCPU"] : 0);
       const virtVals = docs.map(d => d.lpar ? d.lpar["VirtualCPUs"] : 0);
@@ -1071,7 +1180,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       // 4) Syscall/Read/Write
       const syscallVals = docs.map(d => d.proc ? d.proc["Syscall"] : 0);
       const readVals    = docs.map(d => d.proc ? d.proc["Read"]   : 0);
-      const writeVals   = docs.map(d => d.proc ? -Math.abs(d.proc["Write"]) : 0);
+      const writeVals   = docs.map(d => d.proc ? d.proc["Write"]   : 0);
       Plotly.newPlot('syscall_chart', [
         {{ x: times, y: syscallVals, mode: 'lines', name: 'Syscall' }},
         {{ x: times, y: readVals,    mode: 'lines', name: 'Read' }},
@@ -1103,6 +1212,18 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         xaxis: {{ title: 'Time', range: xRange }},
         yaxis: {{ title: 'Calls/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('fork_exec_chart'));
+
+      // NEW: InterProcess Comms - Semaphores/s & Message Queues send/s chart
+      const semVals = docs.map(d => d.proc ? d.proc["sem"] : 0);
+      const msgVals = docs.map(d => d.proc ? d.proc["msg"] : 0);
+      Plotly.newPlot('sem_msg_chart', [
+        {{ x: times, y: semVals, mode: 'lines', name: 'Semaphores/s' }},
+        {{ x: times, y: msgVals, mode: 'lines', name: 'Message Queues send/s' }}
+      ], {{
+        title: 'InterProcess Comms - Semaphores/s & Message Queues send/s (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Calls/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('sem_msg_chart'));
 
       // 7) File I/O
       const readchVals  = docs.map(d => d.file_io ? (d.file_io["readch"]  || 0) : 0);
@@ -1162,6 +1283,54 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
         }}).then(gd => linkCharts('top_cpu_chart'));
       }}
 
+      // NEW: TOP Commands by %CPU (Stacked) chart
+      if (topdocs.length) {{
+         let dataByTimestampStacked = {{}};
+         let commandsSetStacked = new Set();
+         for (const td of topdocs) {{
+            const tsStr = td["@timestamp"];
+            const time = parseTimestamp(tsStr);
+            const cpuVal = td["%CPU"] || 0;
+            const cmd = td["Command"] || "unknown";
+            commandsSetStacked.add(cmd);
+            if (!(tsStr in dataByTimestampStacked)) {{
+                dataByTimestampStacked[tsStr] = {{ time: time, commands: {{}} }};
+            }}
+            dataByTimestampStacked[tsStr].commands[cmd] = (dataByTimestampStacked[tsStr].commands[cmd] || 0) + cpuVal;
+         }}
+         let sortedTimestampsKeysStacked = Object.keys(dataByTimestampStacked).sort((a, b) => {{
+             return dataByTimestampStacked[a].time - dataByTimestampStacked[b].time;
+         }});
+         let sortedCommandsStacked = Array.from(commandsSetStacked).sort();
+         let stackedTraces = [];
+         let counter = 0;
+         for (const command of sortedCommandsStacked) {{
+             let xArr = [];
+             let yArr = [];
+             for (const tsKey of sortedTimestampsKeysStacked) {{
+                 xArr.push(dataByTimestampStacked[tsKey].time);
+                 yArr.push(dataByTimestampStacked[tsKey].commands[command] || 0);
+             }}
+             let fillMode = (counter === 0) ? 'tozeroy' : 'tonexty';
+             stackedTraces.push({{
+                 x: xArr,
+                 y: yArr,
+                 name: command,
+                 mode: 'lines',
+                 stackgroup: 'commands_stacked',
+                 fill: fillMode
+             }});
+             counter++;
+         }}
+         Plotly.newPlot('top_cpu_stacked_chart', stackedTraces, {{
+             title: 'TOP Commands by %CPU (Stacked) (' + lparSelect.value + ')',
+             xaxis: {{ title: 'Time' }},
+             yaxis: {{ title: '%CPU (per command)', rangemode: 'tozero' }}
+         }}).then(gd => linkCharts('top_cpu_stacked_chart'));
+      }} else {{
+         document.getElementById("top_cpu_stacked_chart").innerHTML = "<p>No TOP data</p>";
+      }}
+
       // NEW: Top 20 Process PIDs by CPU (Unstacked)
       // Aggregate total CPU per PID over the period
       let totalByPid = {{}};
@@ -1213,7 +1382,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
 
       // NEW: Top 20 Process PIDs by CPU (Stacked)
       let stackedPidTraces = [];
-      let counter = 0;
+      let counterPid = 0;
       for (const pid of topPIDs) {{
          let xArr = [];
          let yArr = [];
@@ -1221,7 +1390,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
              xArr.push(dataByTimestampPID[ts].time);
              yArr.push(dataByTimestampPID[ts].pids[pid] || 0);
          }}
-         let fillMode = (counter === 0) ? 'tozeroy' : 'tonexty';
+         let fillMode = (counterPid === 0) ? 'tozeroy' : 'tonexty';
          stackedPidTraces.push({{
              x: xArr,
              y: yArr,
@@ -1230,7 +1399,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
              stackgroup: 'pid_stacked',
              fill: fillMode
          }});
-         counter++;
+         counterPid++;
       }}
       Plotly.newPlot('top_pid_stacked_chart', stackedPidTraces, {{
           title: 'Top 20 Process PIDs by CPU (Stacked) (' + lparSelect.value + ')',
@@ -2119,8 +2288,6 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
           y: seaTracesByInterface[iface].write.y,
           mode: 'lines',
           name: iface + " write",
-          legendgroup: iface,
-          showlegend: false
         }});
       }}
       Plotly.newPlot('sea_chart', seaTraces, {{
@@ -2196,9 +2363,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
           x: seapacketTracesByInterface[iface].write.x,
           y: seapacketTracesByInterface[iface].write.y,
           mode: 'lines',
-          name: iface + " write",
-          legendgroup: iface,
-          showlegend: false
+          name: iface + " write"
         }});
       }}
       Plotly.newPlot('sea_packet_chart', seapacketTraces, {{
@@ -2223,7 +2388,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
 
     with open(output_html, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print("Wrote HTML (16 existing charts + DISK/VG charts, plus new Paging, FS Cache, unstacked SEA, stacked SEA, SEA Packets/s, MEM MB, and Top PID charts) to:", output_html)
+    print("Wrote HTML (16 existing charts + DISK/VG charts, plus new Paging, FS Cache, unstacked SEA, stacked SEA, SEA Packets/s, MEM MB, Top PID, CPU Use, and InterProcess Comms charts) to:", output_html)
 
 ################################################################################
 # 5. process_file => parse => NDJSON => return
@@ -2255,7 +2420,8 @@ def process_file(nmon_file, output_dir):
         memuse_data_by_tag,   # NEW: FS Cache Memory Use data
         page_data_by_tag,     # NEW: Paging data
         sea_data_by_tag,      # NEW: SEA data
-        seapacket_data_by_tag # NEW: SEA Packets/s data
+        seapacket_data_by_tag, # NEW: SEA Packets/s data
+        cpu_use_data_by_tag   # NEW: CPU Use per logical CPU data
     ) = parse_nmon_file(nmon_file)
 
     # --- Already-existing logic for "fc" read/write and "netsize" --- 
@@ -2422,6 +2588,10 @@ def process_file(nmon_file, output_dir):
         # NEW: add MEM MB data if available
         if the_tag and the_tag in mem_mb_data_by_tag:
             d["mem_mb"] = mem_mb_data_by_tag[the_tag]
+        # NEW: add CPU Use per logical CPU data if available (fixed)
+        if the_tag and the_tag in cpu_use_data_by_tag:
+            d["cpu_use"] = { cpu: {"user": rec["user_sum"] / rec["count"], "sys": rec["sys_sum"] / rec["count"]} 
+                             for cpu, rec in cpu_use_data_by_tag[the_tag].items() }
     top_docs = build_top_docs(top_data_by_tag, zzzz_map)
 
     base_name = os.path.splitext(os.path.basename(nmon_file))[0]
@@ -2440,7 +2610,7 @@ def process_file(nmon_file, output_dir):
     return (node, all_docs, top_docs)
 
 ################################################################################
-# 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA, SEA Stacked, SEA Packets/s, MEM MB, and Top PID charts)
+# 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA, SEA Stacked, SEA Packets/s, MEM MB, Top PID charts)
 ################################################################################
 
 def main():
