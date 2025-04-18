@@ -850,7 +850,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     /* =============================== */
     .toggle-container {{
       position: absolute;
-      top: 20px;
+      top: 30px;
       right: 20px;
       z-index: 2000;
     }}
@@ -863,52 +863,45 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       cursor: pointer;
       transition: background 0.3s;
     }}
+    
     /* ======================================== */
-/*  Make the top menu & chart borders dark  */
-/* ======================================== */
-body.dark-mode .menu {{
-  background-color: #0d1b2a !important;
-}}
-body.dark-mode .menu label,
-body.dark-mode .menu select,
-body.dark-mode .menu input,
-body.dark-mode .menu button {{
-  background-color: #1f2a3a !important;
-  color: white !important;
-  border: 1px solid #444 !important;
-}}
-body.dark-mode .chart-container {{
-  border-color: #555 !important;
-}}
-
+    /*  Make the top menu & chart borders dark  */
+    /* ======================================== */
+     body.dark-mode .menu {{ background-color: #0d1b2a !important;}}
+     body.dark-mode .menu label,
+     body.dark-mode .menu select,
+     body.dark-mode .menu input,
+     body.dark-mode .menu button {{ background-color: #1f2a3a !important; color: white !important; border: 1px solid #444 !important; }}
+     body.dark-mode .chart-container {{ border-color: #555 !important;}}
+     
     .toggle.dark {{ background: #333; }}
-    .toggle .slider {{
-      width: 26px;
-      height: 26px;
-      background: white;
-      border-radius: 50%;
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      transition: all 0.3s;
-    }}
-    .toggle.dark .slider {{
-      left: 32px;
-      background: #000;
-    }}
-    .icon {{
-      position: absolute;
-      top: 50%;
-      transform: translateY(-50%);
-      font-size: 14px;
-      pointer-events: none;
-    }}
+    .toggle .slider {{width: 26px;height: 26px ; background: white; border-radius: 50%; position: absolute; top: 2px;left: 2px; transition: all 0.3s;}}
+    
+    .icon {{position: absolute; top: 50%; transform: translateY(-50%); font-size: 14px; pointer-events: none; }}
     .sun {{ left: 10px; color: #555; }}
     .moon {{ right: 10px; color: #fff; }}
+    
+    .toggle.dark .slider {{ left: 32px; background: #000; }} 
     .toggle.dark .sun {{ color: #fff; }}
     .toggle.dark .moon {{ color: #999; }}
-    /* =============================== */
+
+  /* ===================================== */
+  /* Full‑screen chart styles */
+  .chart-container.fullscreen {{
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 3000;
+    margin: 0;
+    border: none !important;
+  }}
+  .chart-container.hidden {{
+    display: none !important;
+  }}
   </style>
+  
 </head>
 <body>
   <!-- Dark‑mode toggle markup -->
@@ -1106,6 +1099,26 @@ body.dark-mode .chart-container {{
       applyDarkModeToAllCharts(isDark);
     }});
     
+    // Full‑screen toggle on double‑click
+function setupFullscreen() {{
+  const containers = document.querySelectorAll('.chart-container');
+  containers.forEach(container => {{
+    container.addEventListener('dblclick', () => {{
+      const isFS = document.body.classList.toggle('fullscreen-mode');
+      if (isFS) {{
+        // hide siblings, expand this one
+        containers.forEach(c => {{ if (c !== container) c.classList.add('hidden'); }});
+        container.classList.add('fullscreen');
+        Plotly.Plots.resize(container.firstElementChild);
+      }} else {{
+        // restore layout
+        containers.forEach(c => c.classList.remove('hidden','fullscreen'));
+        chartIds.forEach(id => Plotly.Plots.resize(document.getElementById(id)));
+      }}
+    }});
+  }});
+}}
+
     // Global flag to avoid recursive relayout events
     var relayoutLock = false;
 
@@ -2563,6 +2576,7 @@ body.dark-mode .chart-container {{
 
     // initial rendering, then link all charts
     renderCharts();
+    setupFullscreen();
   </script>
 </body>
 </html>"""
@@ -2824,7 +2838,7 @@ def main():
         lpar_data_map[nodeName].extend(all_docs)
         top_data_map[nodeName].extend(top_docs)
 
-    html_output = os.path.join(args.output_dir, "consolidated_lpar_usage.html")
+    html_output = os.path.join(args.output_dir, "index.html")
     generate_html_page(lpar_data_map, top_data_map, html_output)
     print("Completed. Open:", html_output)
 
