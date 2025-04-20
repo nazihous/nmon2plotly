@@ -106,6 +106,12 @@ def parse_nmon_file(nmon_file):
     seapacket_header_parsed = False
     seapacket_header = []
     seapacket_data_by_tag = {}
+    # --- NEW: For SEACHPHY (SEA Physical Adapter Errors & Drops) ---
+    # Only lines that start with SEACHPHY and whose second field starts with T (e.g., "SEACHPHY,T0001")
+    seachphy_header_parsed = False
+    seachphy_header = []
+    seachphy_data_by_tag = {}
+
 
     # --- NEW: For CPU use (per logical CPU) ---
     # This new branch parses lines like "CPU01,Txxxx,User%,Sys%,Wait%,Idle%"
@@ -581,6 +587,28 @@ def parse_nmon_file(nmon_file):
                 # -------------------------
                 # NEW: SEA (Shared Ethernet Adapter metrics)
                 # -------------------------
+                # -------------------------
+                # NEW: SEACHPHY (SEA PHY Errors & Drops)
+                # -------------------------
+                if key == 'SEACHPHY':
+                    if (not seachphy_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
+                        seachphy_header = parts[2:]
+                        seachphy_header_parsed = True
+                        continue
+                    if len(parts) > 1 and parts[1].startswith('T') and seachphy_header_parsed:
+                        tag = parts[1]
+                        numeric_vals = []
+                        for x in parts[2:]:
+                            try:
+                                numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                            except:
+                                numeric_vals.append(0.0)
+                        d = {}
+                        for i, col_name in enumerate(seachphy_header):
+                            d[col_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        seachphy_data_by_tag[tag] = d
+                        continue
+
                 if key == 'SEA':
                     if (not sea_header_parsed) and len(parts) > 2 and not parts[1].startswith('T'):
                         sea_header = parts[2:]
@@ -649,6 +677,7 @@ def parse_nmon_file(nmon_file):
         memuse_data_by_tag,   # NEW: FS Cache Memory Use data
         page_data_by_tag,     # NEW: Paging data
         sea_data_by_tag,      # NEW: SEA data
+        seachphy_data_by_tag,      # NEW: SEA PHY Errors & Drops data
         seapacket_data_by_tag, # NEW: SEA Packets/s data
         cpu_use_data_by_tag   # NEW: CPU Use per logical CPU data
     )
@@ -818,24 +847,33 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     .logo {{
       position: fixed;
       top: 1px;
-      right: 1px;
+      left: 1px;
       width: 200px;
       z-index: 1000;
     }}
     .menu {{
       margin: 1px;
-    }}
-    #chartsContainer {{
+      position: fixed;
+      top: 15px;       /* sits just below the toggle bar */
+      left: 0;
       width: 100%;
-      overflow: hidden; /* so floats don't extend container */
-      margin-top: 100px;
-    }}
+      z-index: 3500;    /* above the fullscreen chart (zâ€‘index:3000) */
+      background: inherit; /* preserve light/dark background */
+      }}
+      
+      #chartsContainer {{
+       width: 100%;
+       overflow: hidden; /* so floats don't extend container */
+       margin-top: 140px; /* leave room for fixed menu */
+     }}
+     
     .chart-container {{
       float: left;
       border: 1px solid #ccc;
       box-sizing: border-box;
       height: 400px; /* fixed chart height */
     }}
+    
     .chart-container > div {{
       width: 100%;
       height: 100%;
@@ -846,7 +884,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       clear: both;
     }}
      /* =============================== */
-    /* Dark‑mode toggle styles below: */
+    /* Darkâ€‘mode toggle styles below: */
     /* =============================== */
     .toggle-container {{
       position: absolute;
@@ -886,7 +924,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     .toggle.dark .moon {{ color: #999; }}
 
   /* ===================================== */
-  /* Full‑screen chart styles */
+  /* Fullâ€‘screen chart styles */
   .chart-container.fullscreen {{
     position: fixed !important;
     top: 0 !important;
@@ -904,7 +942,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
   
 </head>
 <body>
-  <!-- Dark‑mode toggle markup -->
+  <!-- Dark mode toggle markup -->
   <div class="toggle-container">
     <div class="toggle" id="modeToggle">
       <div class="slider"></div>
@@ -997,6 +1035,8 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="netsize_chart"></div></div>
     <!-- 15) FC read/write -->
     <div class="chart-container"><div id="fc_chart"></div></div>
+    <!-- NEW: Fibre Channel Read/Write Summary chart -->
+    <div class="chart-container"><div id="fc_summary_chart"></div></div>
     <!-- New: FC Stacked chart -->
     <div class="chart-container"><div id="fc_stacked_chart"></div></div>
     <!-- 16) FCXFER chart -->
@@ -1019,10 +1059,16 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="jfs_percent_full_chart"></div></div>
     <!-- NEW: SEA (READ/WRITE (KB/s)) chart -->
     <div class="chart-container"><div id="sea_chart"></div></div>
+    <!-- NEW: SEA Read/Write Summary chart -->
+    <div class="chart-container"><div id="sea_summary_chart"></div></div>
     <!-- NEW: SEA Read/Write - Stacked (KB/s) chart -->
     <div class="chart-container"><div id="sea_stacked_chart"></div></div>
     <!-- NEW: SEA Packets/s chart -->
     <div class="chart-container"><div id="sea_packet_chart"></div></div>
+    <!-- NEW: SEA PHY Errors chart -->
+    <div class="chart-container"><div id="sea_phy_error_chart"></div></div>
+    <!-- NEW: SEA PHY Packets Dropped chart -->
+    <div class="chart-container"><div id="sea_phy_drop_chart"></div></div>
   </div>
   <script>
     const lparDataMap = {embedded_all};
@@ -1055,6 +1101,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "netpacket_chart",
       "netsize_chart",
       "fc_chart",
+      "fc_summary_chart",
       "fc_stacked_chart",
       "fcxfer_chart",
       "disk_read_write_chart",
@@ -1066,10 +1113,13 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "vg_busy_chart",
       "jfs_percent_full_chart",
       "sea_chart",
+      "sea_summary_chart",
       "sea_stacked_chart",
-      "sea_packet_chart"
+      "sea_packet_chart",
+      "sea_phy_error_chart",
+      "sea_phy_drop_chart",
     ];
-    // ========== Dark‑mode relay function ==========
+    // ========== Darkâ€‘mode relay function ==========
     function applyDarkModeToAllCharts(isDark) {{
       const layoutUpdates = isDark
         ? {{
@@ -1091,7 +1141,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       }});
     }}
 
-    // Dark‑mode toggle handler
+    // Darkâ€‘mode toggle handler
     const toggle = document.getElementById('modeToggle');
     toggle.addEventListener('click', () => {{
       const isDark = document.body.classList.toggle('dark-mode');
@@ -1099,21 +1149,32 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       applyDarkModeToAllCharts(isDark);
     }});
     
-    // Full‑screen toggle on double‑click
+  // remember where we were scrolled, so we can restore on fullscreen exit
+     let lastScrollTop = 0;
+     
+    // Fullâ€‘screen toggle on doubleâ€‘click
 function setupFullscreen() {{
   const containers = document.querySelectorAll('.chart-container');
   containers.forEach(container => {{
-    container.addEventListener('dblclick', () => {{
-      const isFS = document.body.classList.toggle('fullscreen-mode');
+  container.addEventListener('dblclick', () => {{
+  
+  // stash scroll before we toggle into fullscreen
+       const willEnter = !document.body.classList.contains('fullscreen-mode');
+       if (willEnter) lastScrollTop = window.scrollY;
+       const isFS = document.body.classList.toggle('fullscreen-mode');
+
       if (isFS) {{
         // hide siblings, expand this one
         containers.forEach(c => {{ if (c !== container) c.classList.add('hidden'); }});
         container.classList.add('fullscreen');
         Plotly.Plots.resize(container.firstElementChild);
-      }} else {{
+      }} 
+      else {{
         // restore layout
         containers.forEach(c => c.classList.remove('hidden','fullscreen'));
         chartIds.forEach(id => Plotly.Plots.resize(document.getElementById(id)));
+         // restore scroll so this chart stays in view
++        window.scrollTo(0, lastScrollTop);
       }}
     }});
   }});
@@ -1996,6 +2057,54 @@ function setupFullscreen() {{
         xaxis: {{ title: 'Time' }},
         yaxis: {{ title: 'KB/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('fc_chart'));
+      // NEW: Fibre Channel Read/Write Summary chart (stacked mean/max pairs)
+      const fcSummaryData = {{}};
+      Object.entries(fcTracesByColumn).forEach(([colName, arrObj]) => {{
+        const dash = colName.indexOf('-');
+        let iface = colName;
+        let direction = '';
+        if (dash > 0) {{
+          iface = colName.slice(0, dash);
+          direction = colName.slice(dash + 1); // read / write
+        }}
+        if (!fcSummaryData[iface]) {{
+          fcSummaryData[iface] = {{ read: [], write: [] }};
+        }}
+        if (direction === 'read')  fcSummaryData[iface].read.push(...arrObj.y);
+        if (direction === 'write') fcSummaryData[iface].write.push(...arrObj.y.map(v => Math.abs(v)));
+      }});
+      const fcIfaces = Object.keys(fcSummaryData).sort();
+      const meanRead = [], meanWrite = [], maxRead = [], maxWrite = [];
+      fcIfaces.forEach(iface => {{
+        const reads  = fcSummaryData[iface].read;
+        const writes = fcSummaryData[iface].write;
+        const mRead  = reads.length ? reads.reduce((a,b)=>a+b,0)/reads.length : 0;
+        const mWrite = writes.length ? -(writes.reduce((a,b)=>a+b,0)/writes.length) : 0;
+        const xRead  = reads.length ? Math.max(...reads) : 0;
+        const xWrite = writes.length ? -Math.max(...writes) : 0;
+        meanRead.push(mRead);
+        meanWrite.push(mWrite);
+        maxRead.push(xRead);
+        maxWrite.push(xWrite);
+      }});
+      Plotly.newPlot('fc_summary_chart', [
+        {{ x: fcIfaces, y: meanRead,  type:'bar', name:'Mean Read',
+           marker:{{color:'#1f77b4'}}, offsetgroup:'meanFC', legendgroup:'meanFC' }},
+        {{ x: fcIfaces, y: meanWrite, type:'bar', name:'Mean Write',
+           marker:{{color:'#2ca02c'}}, offsetgroup:'meanFC', legendgroup:'meanFC', base:0 }},
+        {{ x: fcIfaces, y: maxRead,   type:'bar', name:'Max Read',
+           marker:{{color:'#ff7f0e'}}, offsetgroup:'maxFC', legendgroup:'maxFC' }},
+        {{ x: fcIfaces, y: maxWrite,  type:'bar', name:'Max Write',
+           marker:{{color:'#d62728'}}, offsetgroup:'maxFC', legendgroup:'maxFC', base:0 }}
+      ], {{
+        title: 'Fibre Channel Read/Write Summary (' + lparSelect.value + ')',
+        barmode: 'group',
+        bargap: 0.05,
+        bargroupgap: 0.0,
+        xaxis: {{ title:'Fibre Channel Interface' }},
+        yaxis: {{ title:'KB/s', autorange:true }}
+      }}).then(gd => linkCharts('fc_summary_chart'));
+
 
       // New: FC Stacked chart (separate stackgroups for read and write)
       const fcStackedTraces = [];
@@ -2485,6 +2594,46 @@ function setupFullscreen() {{
         xaxis: {{ title: 'Time', range: xRange }},
         yaxis: {{ title: 'KB/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('sea_chart'));
+      // NEW: SEA Read/Write Summary chart (stacked mean/max pairs)
+      const seaSummaryData = {{}};
+      Object.entries(seaTracesByInterface).forEach(([iface, obj]) => {{
+          seaSummaryData[iface] = {{
+              read:  obj.read.y.slice(),
+              write: obj.write.y.map(v => Math.abs(v))
+          }};
+      }});
+      const seaIfaces = Object.keys(seaSummaryData).sort();
+      const seaMeanRead = [], seaMeanWrite = [], seaMaxRead = [], seaMaxWrite = [];
+      seaIfaces.forEach(iface => {{
+          const reads = seaSummaryData[iface].read;
+          const writes = seaSummaryData[iface].write;
+          const mRead = reads.length ? reads.reduce((a,b)=>a+b,0)/reads.length : 0;
+          const mWrite = writes.length ? -(writes.reduce((a,b)=>a+b,0)/writes.length) : 0;
+          const xRead = reads.length ? Math.max(...reads) : 0;
+          const xWrite = writes.length ? -Math.max(...writes) : 0;
+          seaMeanRead.push(mRead);
+          seaMeanWrite.push(mWrite);
+          seaMaxRead.push(xRead);
+          seaMaxWrite.push(xWrite);
+      }});
+      Plotly.newPlot('sea_summary_chart', [
+          {{ x: seaIfaces, y: seaMeanRead,  type:'bar', name:'Mean Read',
+             marker:{{color:'#1f77b4'}}, offsetgroup:'meanSEA', legendgroup:'meanSEA' }},
+          {{ x: seaIfaces, y: seaMeanWrite, type:'bar', name:'Mean Write',
+             marker:{{color:'#2ca02c'}}, offsetgroup:'meanSEA', legendgroup:'meanSEA', base:0 }},
+          {{ x: seaIfaces, y: seaMaxRead,   type:'bar', name:'Max Read',
+             marker:{{color:'#ff7f0e'}}, offsetgroup:'maxSEA', legendgroup:'maxSEA' }},
+          {{ x: seaIfaces, y: seaMaxWrite,  type:'bar', name:'Max Write',
+             marker:{{color:'#d62728'}}, offsetgroup:'maxSEA', legendgroup:'maxSEA', base:0 }}
+      ], {{
+          title: 'SEA Read/Write Summary (' + lparSelect.value + ')',
+          barmode: 'group',
+          bargap: 0.05,
+          bargroupgap: 0.0,
+          xaxis: {{ title:'SEA Interface' }},
+          yaxis: {{ title:'KB/s', autorange:true }}
+      }}).then(gd => linkCharts('sea_summary_chart'));
+
 
       // NEW: SEA Read/Write - Stacked (KB/s) chart
       const seaStackedTraces = [];
@@ -2561,6 +2710,48 @@ function setupFullscreen() {{
          xaxis: {{ title: 'Time', range: xRange }},
          yaxis: {{ title: 'Packets/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('sea_packet_chart'));
+      // NEW: SEA PHY Errors (Transmit/Receive) chart
+      const seaPhyTransmitErr = [];
+      const seaPhyReceiveErr = [];
+      docs.forEach(d => {{
+          let txErr = 0; let rxErr = 0;
+          if (d.seachphy) {{
+              for (const colName in d.seachphy) {{
+                  if (colName.endsWith('_Transmit_Errors')) txErr += d.seachphy[colName];
+                  if (colName.endsWith('_Receive_Errors')) rxErr += d.seachphy[colName];
+              }}
+          }}
+          seaPhyTransmitErr.push(txErr);
+          seaPhyReceiveErr.push(rxErr);
+      }});
+      Plotly.newPlot('sea_phy_error_chart', [
+          {{ x: times, y: seaPhyTransmitErr, mode: 'lines', name: 'Transmit Errors' }},
+          {{ x: times, y: seaPhyReceiveErr, mode: 'lines', name: 'Receive Errors' }}
+      ], {{
+          title: 'SEA PHY Errors (Transmit/Receive) (' + lparSelect.value + ')',
+          xaxis: {{ title: 'Time', range: xRange }},
+          yaxis: {{ title: 'Errors', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('sea_phy_error_chart'));
+
+      // NEW: SEA PHY Packets Dropped chart
+      const seaPhyDrops = [];
+      docs.forEach(d => {{
+          let drops = 0;
+          if (d.seachphy) {{
+              for (const colName in d.seachphy) {{
+                  if (colName.endsWith('_Packets_Dropped')) drops += d.seachphy[colName];
+              }}
+          }}
+          seaPhyDrops.push(drops);
+      }});
+      Plotly.newPlot('sea_phy_drop_chart', [
+          {{ x: times, y: seaPhyDrops, mode: 'lines', name: 'Packets Dropped' }}
+      ], {{
+          title: 'SEA PHY Packets Dropped (' + lparSelect.value + ')',
+          xaxis: {{ title: 'Time', range: xRange }},
+          yaxis: {{ title: 'Packets', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('sea_phy_drop_chart'));
+
       
        if (document.body.classList.contains('dark-mode')) {{
       applyDarkModeToAllCharts(true);
@@ -2615,6 +2806,7 @@ def process_file(nmon_file, output_dir):
         memuse_data_by_tag,   # NEW: FS Cache Memory Use data
         page_data_by_tag,     # NEW: Paging data
         sea_data_by_tag,      # NEW: SEA data
+        seachphy_data_by_tag,      # NEW: SEA PHY Errors & Drops data
         seapacket_data_by_tag, # NEW: SEA Packets/s data
         cpu_use_data_by_tag   # NEW: CPU Use per logical CPU data
     ) = parse_nmon_file(nmon_file)
@@ -2777,6 +2969,9 @@ def process_file(nmon_file, output_dir):
         # NEW: add SEA data if available
         if the_tag and the_tag in sea_data_by_tag:
             d["sea"] = sea_data_by_tag[the_tag]
+        # NEW: add SEA PHY data if available
+        if the_tag and the_tag in seachphy_data_by_tag:
+            d["seachphy"] = seachphy_data_by_tag[the_tag]
         # NEW: add SEA Packets/s data if available
         if the_tag and the_tag in seapacket_data_by_tag:
             d["seapacket"] = seapacket_data_by_tag[the_tag]
