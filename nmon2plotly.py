@@ -48,6 +48,7 @@ def parse_nmon_file(nmon_file):
     netpacket_data_by_tag = {}
     zzzz_map = {}
     node = None
+    frame = None
     fallback_date = None
     net_header_parsed = False
     net_columns = []
@@ -362,6 +363,8 @@ def parse_nmon_file(nmon_file):
                     value = parts[2]
                     if somekey == 'NodeName':
                         node = value
+                    elif somekey == 'SerialNumber':
+                        frame = value.strip()
                     elif somekey == 'date':
                         fallback_date = value
                 # -------------------------
@@ -659,6 +662,7 @@ def parse_nmon_file(nmon_file):
         top_data_by_tag,
         zzzz_map,
         node,
+        frame,
         memnew_data_by_tag,
         mem_data_by_tag,
         mem_mb_data_by_tag,  # NEW: MEM MB data
@@ -804,7 +808,7 @@ def write_ndjson(docs, filepath):
 #        just before the TOP Commands by %CPU chart.
 ################################################################################
 
-def generate_html_page(lpar_data_map, top_data_map, output_html):
+def generate_html_page(lpar_data_map, top_data_map, frame_lpar_map, output_html):
     """
     Original charts: 16 charts + 5 new DISK/VG charts.
     Added:
@@ -829,6 +833,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     """
     embedded_all = json.dumps(lpar_data_map)
     embedded_top = json.dumps(top_data_map)
+    embedded_frames = json.dumps(frame_lpar_map)
 
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -965,6 +970,9 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
   </div>
   <img src="nmon2plotly.png" alt="nmon2plotly logo" class="logo" />
   <div class="menu">
+    <label for="frame_select">Select FRAME:</label>
+    <select id="frame_select"></select>
+    &nbsp;&nbsp;
     <label for="lpar_select">Select LPAR:</label>
     <select id="lpar_select"></select>
     &nbsp;&nbsp;
@@ -1093,6 +1101,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
   <script>
     const lparDataMap = {embedded_all};
     const topDataMap  = {embedded_top};
+    const frameMap    = {embedded_frames};
 
     // Global array for chart div IDs; note the new "top_bubble_chart" is inserted right after "fileio_chart".
     const chartIds = [
@@ -1210,15 +1219,33 @@ function setupFullscreen() {{
       return new Date(ts);
     }}
 
-    // LPAR dropdown
+    // FRAME & LPAR dropdowns
+    const frameSelect = document.getElementById("frame_select");
     const lparSelect = document.getElementById("lpar_select");
-    const lparNames = Object.keys(lparDataMap).sort();
-    for (const nm of lparNames) {{
-      const opt = document.createElement("option");
-      opt.value = nm;
-      opt.text = nm;
-      lparSelect.appendChild(opt);
+
+    function populateFrames() {{
+      const frames = Object.keys(frameMap).sort();
+      for (const fr of frames) {{
+        const opt = document.createElement("option");
+        opt.value = fr;
+        opt.text = fr;
+        frameSelect.appendChild(opt);
+      }}
     }}
+
+    function populateLpars(frameVal, selectEl) {{
+      selectEl.innerHTML = "";
+      const lpars = (frameMap[frameVal] || []).slice().sort();
+      for (const nm of lpars) {{
+        const opt = document.createElement("option");
+        opt.value = nm;
+        opt.text = nm;
+        selectEl.appendChild(opt);
+      }}
+    }}
+
+    populateFrames();
+    populateLpars(frameSelect.value || Object.keys(frameMap)[0], lparSelect);
 
     function getFilteredDocs() {{
       const sel = lparSelect.value;
@@ -2884,6 +2911,14 @@ function setupFullscreen() {{
     }}
 
     document.getElementById("chartsPerRow").addEventListener("change", renderCharts);
+    frameSelect.addEventListener("change", () => {{
+      const prev = lparSelect.value;
+      populateLpars(frameSelect.value, lparSelect);
+      if (Array.from(lparSelect.options).some(o => o.value === prev)) {{
+        lparSelect.value = prev;
+      }}
+      renderCharts();
+    }});
     lparSelect.addEventListener("change", renderCharts);
 
     // initial rendering, then link all charts
@@ -2912,11 +2947,16 @@ document.addEventListener('DOMContentLoaded', () => {{
   menuB.style.top = (menuA.offsetTop + menuA.offsetHeight + 6) + 'px';
   menuA.after(menuB);
 
-  /* fill LPAR list B */
-  const selA = document.getElementById('lpar_select');
-  const selB = document.getElementById('lpar_select_b');
-  Object.keys(lparDataMap).sort().forEach(n=>{{ const o=document.createElement('option'); o.value=n;o.textContent=n; selB.appendChild(o); }});
-  selB.value = selA.value;
+  /* fill FRAME & LPAR list B */
+  const frameA = document.getElementById("frame_select");
+  const frameB = document.getElementById("frame_select_b");
+  const selA = document.getElementById("lpar_select");
+  const selB = document.getElementById("lpar_select_b");
+  Object.keys(frameMap).sort().forEach(f=>{{ const o=document.createElement("option"); o.value=f;o.textContent=f; frameB.appendChild(o); }});
+  frameB.value = frameA.value;
+  function populateLparsB(fr){{ selB.innerHTML=''; (frameMap[fr]||[]).sort().forEach(n=>{{ const o=document.createElement("option"); o.value=n;o.textContent=n; selB.appendChild(o); }}); }}
+  populateLparsB(frameB.value);
+  if(Array.from(selB.options).some(o=>o.value===selA.value)) selB.value=selA.value;
 
   /* ---- create empty comparison divs ---- */
   chartIds.forEach(id=>{{
@@ -2976,8 +3016,13 @@ document.addEventListener('DOMContentLoaded', () => {{
   }});
 
   /* change listeners */
-  ['lpar_select_b','start_date_b','end_date_b'].forEach(id=>{{
-     document.getElementById(id).addEventListener('change',()=>{{ if(comparisonMode) renderChartsB(); }});
+  ['frame_select_b','lpar_select_b','start_date_b','end_date_b'].forEach(id=>{{
+     document.getElementById(id).addEventListener('change',()=>{{
+        if(id==='frame_select_b') {{
+           populateLparsB(document.getElementById('frame_select_b').value);
+        }}
+        if(comparisonMode) renderChartsB();
+     }});
   }});
 
   /* dark mode observer */
@@ -3012,6 +3057,7 @@ def process_file(nmon_file, output_dir):
         top_data_by_tag,
         zzzz_map,
         node,
+        frame,
         memnew_data_by_tag,
         mem_data_by_tag,
         mem_mb_data_by_tag,  # NEW: MEM MB data
@@ -3220,7 +3266,7 @@ def process_file(nmon_file, output_dir):
     write_ndjson(top_docs, top_path)
     print(f"Wrote {len(top_docs)} top docs => {top_path}")
 
-    return (node, all_docs, top_docs)
+    return (node, frame, all_docs, top_docs)
 
 ################################################################################
 # 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA, SEA Stacked, SEA Packets/s, MEM MB, Top PID charts)
@@ -3243,21 +3289,25 @@ def main():
 
     lpar_data_map = {}
     top_data_map = {}
+    frame_lpar_map = {}
+    lpar_frame_map = {}
     tasks = [(fp, args.output_dir) for fp in nmon_files]
 
     with Pool(processes=args.processes) as p:
         results = p.starmap(process_file, tasks)
 
-    for (nodeName, all_docs, top_docs) in results:
+    for (nodeName, frameName, all_docs, top_docs) in results:
         if nodeName not in lpar_data_map:
             lpar_data_map[nodeName] = []
         if nodeName not in top_data_map:
             top_data_map[nodeName] = []
         lpar_data_map[nodeName].extend(all_docs)
         top_data_map[nodeName].extend(top_docs)
+        lpar_frame_map[nodeName] = frameName
+        frame_lpar_map.setdefault(frameName, []).append(nodeName)
 
     html_output = os.path.join(args.output_dir, "index.html")
-    generate_html_page(lpar_data_map, top_data_map, html_output)
+    generate_html_page(lpar_data_map, top_data_map, frame_lpar_map, html_output)
     print("Completed. Open:", html_output)
 
 if __name__ == "__main__":
