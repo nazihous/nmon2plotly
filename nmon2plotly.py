@@ -1019,6 +1019,8 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="fileio_chart"></div></div>
     <!-- NEW: TOPSUM Bubble Chart -->
     <div class="chart-container"><div id="top_bubble_chart"></div></div>
+    <!-- NEW: TOPSUM Bubble Chart (by PID) -->
+    <div class="chart-container"><div id="top_bubble_pid_chart"></div></div>
     <!-- 8) TOP CPU - modified to align with ksh logic (by Command) -->
     <div class="chart-container"><div id="top_cpu_chart"></div></div>
     <!-- NEW: TOP Commands by %CPU (Stacked) chart -->
@@ -1107,6 +1109,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "sem_msg_chart",
       "fileio_chart",
       "top_bubble_chart",
+      "top_bubble_pid_chart",
       "top_cpu_chart",
       "top_cpu_stacked_chart",
       "top_pid_chart",
@@ -1526,7 +1529,63 @@ function setupFullscreen() {{
                   font: {{ size: 10 }}
               }},
               margin: {{ t: 50, r: 150 }}
-         }}).then(gd => linkCharts('top_bubble_chart'));
+        }}).then(gd => linkCharts('top_bubble_chart'));
+      }}
+
+      // NEW: TOPSUM Bubble Chart for TOP data (aggregated by PID)
+      if (!topdocs.length) {{
+         document.getElementById("top_bubble_pid_chart").innerHTML = "<p>No TOP data</p>";
+      }} else {{
+         let bubblePidData = {{}};
+         topdocs.forEach(function(td) {{
+              let pid = td["PID"] || "unknown";
+              let cpuVal = td["%CPU"] || 0;
+              let charioVal = td["CharIO"] || 0;
+              let memVal = td["Memory"] || 0;
+              if (!(pid in bubblePidData)) {{
+                  bubblePidData[pid] = {{ cpu: 0, chario: 0, mem: 0 }};
+              }}
+              bubblePidData[pid].cpu += cpuVal;
+              bubblePidData[pid].chario += charioVal;
+              if (memVal > bubblePidData[pid].mem) {{
+                  bubblePidData[pid].mem = memVal;
+              }}
+         }});
+         let bubblePidArray = [];
+         for (let pid in bubblePidData) {{
+              bubblePidArray.push({{ pid: pid, cpu: bubblePidData[pid].cpu, chario: bubblePidData[pid].chario / 1024, mem: bubblePidData[pid].mem }});
+         }}
+         bubblePidArray.sort((a, b) => b.cpu - a.cpu);
+         bubblePidArray = bubblePidArray.slice(0, 20);
+         let maxPidSize = Math.max(...bubblePidArray.map(item => item.mem));
+         let bubblePidTraces = bubblePidArray.map(item => {{
+              return {{
+                x: [item.cpu],
+                y: [item.chario],
+                text: [item.pid],
+                name: item.pid,
+                mode: 'markers',
+                marker: {{
+                  size: [item.mem],
+                  sizemode: 'area',
+                  sizeref: 2.0 * maxPidSize / (100**2),
+                  sizemin: 4
+                }},
+                hovertemplate: 'PID: %{{text}}<br>CPU: %{{x:.1f}}<br>Char I/O: %{{y:.1f}} KB<br>Memory: %{{marker.size}} KB<extra></extra>'
+              }};
+         }});
+         Plotly.newPlot('top_bubble_pid_chart', bubblePidTraces, {{
+              title: {{ text: `Top 20 PIDs by CPU Correlation  (${{lparSelect.value}})<br><span style="font-size:12px">(Total CPU Seconds, Character I/O, Max Memory Size)</span>`, x: 0.5, xanchor:'center'}},
+              xaxis: {{ title: 'CPU seconds in Total' }},
+              yaxis: {{ title: 'Character I/O in Total (KB)' }},
+              legend: {{
+                  x: 1.05,
+                  y: 1,
+                  orientation: "v",
+                  font: {{ size: 10 }}
+              }},
+              margin: {{ t: 50, r: 150 }}
+         }}).then(gd => linkCharts('top_bubble_pid_chart'));
       }}
 
       // 8) TOP CPU - modified to align with ksh logic (by Command)
