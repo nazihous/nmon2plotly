@@ -176,13 +176,12 @@ def parse_nmon_file(nmon_file):
                 if key == 'LPAR' and len(parts) > 1 and parts[1].startswith('T'):
                     tag = parts[1]
                     try:
-                        physical_cpu = float(parts[2]) if parts[2].strip() else 0.0
-                        virtual_cpus = float(parts[3]) if parts[3].strip() else 0.0
-                        entitled     = float(parts[6]) if len(parts) > 6 and parts[6].strip() else 0.0
                         lpar_data_by_tag[tag] = {
-                            'PhysicalCPU': physical_cpu,
-                            'VirtualCPUs': virtual_cpus,
-                            'Entitled':    entitled
+                            'PoolCPUs': float(parts[5]) if len(parts) > 5 and parts[5].strip() else 0.0,
+                            'PoolIdle': float(parts[8]) if len(parts) > 8 and float(parts[8]) < 300 and parts[8].strip() else 0.0,
+                            'PhysicalCPU': float(parts[2]) if parts[2].strip() else 0.0,
+                            'VirtualCPUs': float(parts[3]) if parts[3].strip() else 0.0,
+                            'Entitled':    float(parts[6]) if len(parts) > 6 and parts[6].strip() else 0.0
                         }
                     except:
                         pass
@@ -845,16 +844,17 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       transition: background 0.3s, color 0.3s;
     }}
     .logo {{
-      position: fixed;
-      top: 1px;
-      left: 1px;
+      position: absolute;
+      top: 5px;
+      left: 4px;
       width: 200px;
       z-index: 1000;
     }}
+    
     .menu {{
       margin: 1px;
-      position: fixed;
-      top: 15px;       /* sits just below the toggle bar */
+      position: absolute;
+      top: 10px;       /* sits just below the toggle bar */
       left: 0;
       width: 100%;
       z-index: 3500;    /* above the fullscreen chart (zâ€‘index:3000) */
@@ -869,9 +869,11 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
      
     .chart-container {{
       float: left;
-      border: 1px solid #ccc;
+      border: 2px solid #ccc;
       box-sizing: border-box;
       height: 400px; /* fixed chart height */
+      border-radius: 2%; 
+      overflow: hidden;
     }}
     
     .chart-container > div {{
@@ -888,10 +890,15 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     /* =============================== */
     .toggle-container {{
       position: absolute;
-      top: 30px;
+      top: 80px;
       right: 20px;
-      z-index: 2000;
-    }}
+      z-index: 1000;
+    
+  display:flex;
+  gap:8px;
+  align-items:center;
+}}
+    
     .toggle {{
       width: 60px;
       height: 30px;
@@ -910,7 +917,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
      body.dark-mode .menu select,
      body.dark-mode .menu input,
      body.dark-mode .menu button {{ background-color: #1f2a3a !important; color: white !important; border: 1px solid #444 !important; }}
-     body.dark-mode .chart-container {{ border-color: #555 !important;}}
+     body.dark-mode .chart-container {{ border-color: white !important;}}
      
     .toggle.dark {{ background: #333; }}
     .toggle .slider {{width: 26px;height: 26px ; background: white; border-radius: 50%; position: absolute; top: 2px;left: 2px; transition: all 0.3s;}}
@@ -944,6 +951,12 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
 <body>
   <!-- Dark mode toggle markup -->
   <div class="toggle-container">
+    <div class="toggle" id="compareToggle">
+      <div class="slider"></div>
+      <div class="icon sun">🅰️</div>
+      <div class="icon moon">🅱️</div>
+    </div>
+    
     <div class="toggle" id="modeToggle">
       <div class="slider"></div>
       <div class="icon sun">☀️</div>
@@ -996,6 +1009,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <!-- NEW: Average Use of Logical CPU Core Threads - POWER=SMT (Stacked Bar Chart) -->
     <div class="chart-container"><div id="cpu_use_chart"></div></div>
     <div class="chart-container"><div id="lpar_usage_chart"></div></div>
+    <div class="chart-container"><div id="pool_usage_chart"></div></div>
     <div class="chart-container"><div id="runnable_chart"></div></div>
     <div class="chart-container"><div id="syscall_chart"></div></div>
     <div class="chart-container"><div id="pswitch_chart"></div></div>
@@ -1065,6 +1079,12 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="sea_stacked_chart"></div></div>
     <!-- NEW: SEA Packets/s chart -->
     <div class="chart-container"><div id="sea_packet_chart"></div></div>
+
+<!-- NEW: SEAPHY (READ/WRITE KB/s) chart -->
+<div class="chart-container"><div id="sea_phy_rw_chart"></div></div>
+<!-- NEW: SEAPHY Read/Write Summary chart -->
+<div class="chart-container"><div id="sea_phy_summary_chart"></div></div>
+
     <!-- NEW: SEA PHY Errors chart -->
     <div class="chart-container"><div id="sea_phy_error_chart"></div></div>
     <!-- NEW: SEA PHY Packets Dropped chart -->
@@ -1079,6 +1099,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "cpu_usage_chart",
       "cpu_use_chart",
       "lpar_usage_chart",
+      "pool_usage_chart",
       "runnable_chart",
       "syscall_chart",
       "pswitch_chart",
@@ -1116,6 +1137,8 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "sea_summary_chart",
       "sea_stacked_chart",
       "sea_packet_chart",
+      "sea_phy_rw_chart",
+      "sea_phy_summary_chart",
       "sea_phy_error_chart",
       "sea_phy_drop_chart",
     ];
@@ -1281,17 +1304,17 @@ function setupFullscreen() {{
       }}
       const times = docs.map(d => parseTimestamp(d["@timestamp"]));
       const xRange = [times[0], times[times.length - 1]];
-
+      
       // 1) CPU usage
-      const userVals = docs.map(d => d.cpu_all ? d.cpu_all["User%"] : 0);
-      const sysVals  = docs.map(d => d.cpu_all ? d.cpu_all["Sys%"]  : 0);
-      const idleVals = docs.map(d => d.cpu_all ? d.cpu_all["Idle%"] : 0);
-      const waitVals = docs.map(d => d.cpu_all ? d.cpu_all["Wait%"] : 0);
+      const userVals = docs.map(d => d.cpu_all ? d.cpu_all["User%"] : null);
+      const sysVals  = docs.map(d => d.cpu_all ? d.cpu_all["Sys%"]  : null);
+      const idleVals = docs.map(d => d.cpu_all ? d.cpu_all["Idle%"] : null);
+      const waitVals = docs.map(d => d.cpu_all ? d.cpu_all["Wait%"] : null);
       Plotly.newPlot('cpu_usage_chart', [
-        {{ x: times, y: userVals, mode: 'lines', name: 'User%', stackgroup: 'one', line: {{ color: '#1f77b4' }} }},
-        {{ x: times, y: sysVals,  mode: 'lines', name: 'Sys%',  stackgroup: 'one', line: {{ color: '#d62728' }} }},
-        {{ x: times, y: waitVals, mode: 'lines', name: 'Wait%', stackgroup: 'one', line: {{ color: '#ff7f0e' }} }},
-        {{ x: times, y: idleVals, mode: 'lines', name: 'Idle%', stackgroup: 'one', line: {{ color: '#2ca02c' }} }}
+        {{ x: times, y: userVals, mode: 'lines', name: 'User%', stackgroup: 'one',line: {{ color: '#1f77b4' }} ,connectgaps: false , stackgaps: false}},
+        {{ x: times, y: sysVals,  mode: 'lines', name: 'Sys%',  stackgroup: 'one', line: {{ color: '#d62728' }} ,connectgaps: false , stackgaps: false}},
+        {{ x: times, y: waitVals, mode: 'lines', name: 'Wait%', stackgroup: 'one',line: {{ color: '#ff7f0e' }} ,connectgaps: false , stackgaps: false}},
+        {{ x: times, y: idleVals, mode: 'lines', name: 'Idle%', stackgroup: 'one', line: {{ color: '#2ca02c' }} ,connectgaps: false , stackgaps: false}}
       ], {{
         title: 'CPU Usage (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time', range: xRange }},
@@ -1345,44 +1368,57 @@ function setupFullscreen() {{
          type: 'bar'
       }};
       Plotly.newPlot('cpu_use_chart', [traceUser, traceSys], {{
-         title: 'Average Use of Logical CPU Core Threads - POWER=SMT',
+         title: 'Average Use of LCPU Core Threads - POWER=SMT',
          barmode: 'stack',
          xaxis: {{ title: 'CPU Core' }},
          yaxis: {{ title: '% Usage' }}
       }}).then(gd => linkCharts('cpu_usage_chart'));
 
       // 2) LPAR usage
-      const physVals = docs.map(d => d.lpar ? d.lpar["PhysicalCPU"] : 0);
-      const virtVals = docs.map(d => d.lpar ? d.lpar["VirtualCPUs"] : 0);
-      const entVals  = docs.map(d => d.lpar ? d.lpar["Entitled"]    : 0);
+      const physVals = docs.map(d => d.lpar ? d.lpar["PhysicalCPU"] : null);
+      const virtVals = docs.map(d => d.lpar ? d.lpar["VirtualCPUs"] : null);
+      const entVals  = docs.map(d => d.lpar ? d.lpar["Entitled"]    : null);
       Plotly.newPlot('lpar_usage_chart', [
-        {{ x: times, y: physVals, mode: 'lines', fill: 'tozeroy', fillcolor: 'rgba(0, 123, 255, 0.1)', name: 'PhysicalCPU' }},
-        {{ x: times, y: virtVals, mode: 'lines', name: 'VirtualCPUs' }},
-        {{ x: times, y: entVals,  mode: 'lines', name: 'Entitled' }}
+        {{ x: times, y: physVals, mode: 'lines', fill: 'tozeroy', fillcolor: 'rgba(0, 123, 255, 0.1)', name: 'PhysicalCPU' , connectgaps: false }},
+        {{ x: times, y: virtVals, mode: 'lines', name: 'VirtualCPUs' , connectgaps: false }},
+        {{ x: times, y: entVals,  mode: 'lines', name: 'Entitled' , connectgaps: false }}
       ], {{
         title: 'LPAR Usage (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time', range: xRange }},
         yaxis: {{ title: 'CPU Count', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('lpar_usage_chart'));
+      
+      // NEW: Pool CPUs & Pool Idle
+      const poolCPUsVals = docs.map(d => d.lpar ? d.lpar["PoolCPUs"] : null);
+      const poolIdleVals = docs.map(d => d.lpar ? d.lpar["PoolIdle"] : null);
+      Plotly.newPlot('pool_usage_chart', [
+        {{ x: times, y: poolCPUsVals, mode: 'lines', fill: 'tozeroy', fillcolor: 'rgba(0, 123, 255, 0.1)',name: 'PoolCPUs' , connectgaps: false }},
+        {{ x: times, y: poolIdleVals, mode: 'lines', fill: 'tozeroy',line: {{ color: 'rgb(44, 160, 44)' }},fillcolor: 'rgba(44, 160, 44, 0.5)',name: 'PoolIdle' , connectgaps: false }}
+      ], {{
+        title: {{ text: `Pool CPUs & Pool Idle (${{lparSelect.value}})<br><span style="font-size:12px">PoolIdle=0 --> allow_perf_collection = 0</span>`, x: 0.5, xanchor:'center'}},
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'Count/Percentage' }}
+      }}).then(gd => linkCharts('pool_usage_chart'));
+
 
       // 3) Runnable
-      const runVals = docs.map(d => d.proc ? d.proc["Runnable"] : 0);
+      const runVals = docs.map(d => d.proc ? d.proc["Runnable"] : null);
       Plotly.newPlot('runnable_chart', [
-        {{ x: times, y: runVals, mode: 'lines', fill: 'tozeroy', name: 'Runnable' }}
+        {{ x: times, y: runVals, mode: 'lines', fill: 'tozeroy', name: 'Runnable' , connectgaps: false}}
       ], {{
-        title: 'Runnable (' + lparSelect.value + ')',
+        title: 'Run Queue (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time', range: xRange }},
         yaxis: {{ title: 'Count', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('runnable_chart'));
 
       // 4) Syscall/Read/Write
-      const syscallVals = docs.map(d => d.proc ? d.proc["Syscall"] : 0);
-      const readVals    = docs.map(d => d.proc ? d.proc["Read"]   : 0);
-      const writeVals   = docs.map(d => d.proc ? d.proc["Write"]   : 0);
+      const syscallVals = docs.map(d => d.proc ? d.proc["Syscall"] : null);
+      const readVals    = docs.map(d => d.proc ? d.proc["Read"]   : null);
+      const writeVals   = docs.map(d => d.proc ? d.proc["Write"]   : null);
       Plotly.newPlot('syscall_chart', [
-        {{ x: times, y: syscallVals, mode: 'lines', name: 'Syscall' }},
-        {{ x: times, y: readVals,    mode: 'lines', name: 'Read' }},
-        {{ x: times, y: writeVals,   mode: 'lines', name: 'Write' }}
+        {{ x: times, y: syscallVals, mode: 'lines', name: 'Syscall' , connectgaps: false}},
+        {{ x: times, y: readVals,    mode: 'lines', name: 'Read' , connectgaps: false }},
+        {{ x: times, y: writeVals,   mode: 'lines', name: 'Write' , connectgaps: false }}
       ], {{
         title: 'Syscall / Read / Write',
         xaxis: {{ title: 'Time', range: xRange }},
@@ -1390,9 +1426,9 @@ function setupFullscreen() {{
       }}).then(gd => linkCharts('syscall_chart'));
 
       // 5) pswitch
-      const pswVals = docs.map(d => d.proc ? d.proc["pswitch"] : 0);
+      const pswVals = docs.map(d => d.proc ? d.proc["pswitch"] : null);
       Plotly.newPlot('pswitch_chart', [
-        {{ x: times, y: pswVals, mode: 'lines', fill: 'tozeroy', name: 'pswitch' }}
+        {{ x: times, y: pswVals, mode: 'lines', fill: 'tozeroy', name: 'pswitch'  , connectgaps: false }}
       ], {{
         title: 'Process Switches',
         xaxis: {{ title: 'Time', range: xRange }},
@@ -1400,36 +1436,36 @@ function setupFullscreen() {{
       }}).then(gd => linkCharts('pswitch_chart'));
 
       // 6) fork+exec
-      const forkVals = docs.map(d => d.proc ? d.proc["fork"] : 0);
-      const execVals = docs.map(d => d.proc ? d.proc["exec"] : 0);
+      const forkVals = docs.map(d => d.proc ? d.proc["fork"] : null);
+      const execVals = docs.map(d => d.proc ? d.proc["exec"] : null);
       Plotly.newPlot('fork_exec_chart', [
-        {{ x: times, y: forkVals, mode: 'lines', name: 'fork' }},
-        {{ x: times, y: execVals, mode: 'lines', name: 'exec' }}
+        {{ x: times, y: forkVals, mode: 'lines', name: 'fork' , connectgaps: false}},
+        {{ x: times, y: execVals, mode: 'lines', name: 'exec' , connectgaps: false }}
       ], {{
         title: 'fork() & exec()',
         xaxis: {{ title: 'Time', range: xRange }},
         yaxis: {{ title: 'Calls/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('fork_exec_chart'));
 
-      // NEW: InterProcess Comms - Semaphores/s & Message Queues send/s chart
-      const semVals = docs.map(d => d.proc ? d.proc["sem"] : 0);
-      const msgVals = docs.map(d => d.proc ? d.proc["msg"] : 0);
+      // NEW: InterProcess Comms - Semaphores/s & Msg Queues send/s
+      const semVals = docs.map(d => d.proc ? d.proc["sem"] : null);
+      const msgVals = docs.map(d => d.proc ? d.proc["msg"] : null);
       Plotly.newPlot('sem_msg_chart', [
-        {{ x: times, y: semVals, mode: 'lines', name: 'Semaphores/s' }},
-        {{ x: times, y: msgVals, mode: 'lines', name: 'Message Queues send/s' }}
+        {{ x: times, y: semVals, mode: 'lines', name: 'sem' , connectgaps: false}},
+        {{ x: times, y: msgVals, mode: 'lines', name: 'msg' , connectgaps: false }}
       ], {{
-        title: 'InterProcess Comms - Semaphores/s & Message Queues send/s (' + lparSelect.value + ')',
+        title: {{ text: `InterProcess Comms (${{lparSelect.value}})<br><span style="font-size:12px">Semaphores/s & Msg Queues send/s</span>`, x: 0.5, xanchor:'center'}},
         xaxis: {{ title: 'Time', range: xRange }},
         yaxis: {{ title: 'Calls/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('sem_msg_chart'));
 
       // 7) File I/O
-      const readchVals  = docs.map(d => d.file_io ? (d.file_io["readch"]  || 0) : 0);
-      const writechVals = docs.map(d => d.file_io ? (d.file_io["writech"] || 0) : 0);
+      const readchVals  = docs.map(d => d.file_io ? (d.file_io["readch"]  || 0) : null);
+      const writechVals = docs.map(d => d.file_io ? (d.file_io["writech"] || 0) : null);
       const negWrite    = writechVals.map(v => -Math.abs(v));
       Plotly.newPlot('fileio_chart', [
-        {{ x: times, y: readchVals, mode: 'lines', name: 'readch',  stackgroup: 'one' }},
-        {{ x: times, y: negWrite,   mode: 'lines', name: 'writech', stackgroup: 'two' }}
+        {{ x: times, y: readchVals, mode: 'lines', name: 'readch',  stackgroup: 'one' , connectgaps: false }},
+        {{ x: times, y: negWrite,   mode: 'lines', name: 'writech', stackgroup: 'two' , connectgaps: false }}
       ], {{
         title: 'File I/O: readch & writech',
         xaxis: {{ title: 'Time', range: xRange }},
@@ -1480,7 +1516,7 @@ function setupFullscreen() {{
               }};
          }});
          Plotly.newPlot('top_bubble_chart', bubbleTraces, {{
-              title: 'Top 20 Processes by CPU Correlation (Total CPU Seconds, Character I/O, Max Memory Size)',
+              title: {{ text: `Top 20 Processes by CPU Correlation  (${{lparSelect.value}})<br><span style="font-size:12px">(Total CPU Seconds, Character I/O, Max Memory Size)</span>`, x: 0.5, xanchor:'center'}},
               xaxis: {{ title: 'CPU seconds in Total' }},
               yaxis: {{ title: 'Character I/O in Total (KB)' }},
               legend: {{
@@ -1659,13 +1695,13 @@ function setupFullscreen() {{
       }}).then(gd => linkCharts('top_pid_stacked_chart'));
 
       // NEW: FS Cache Memory Use (numperm) Percentage chart
-      const numpermVals = docs.map(d => d.memuse ? d.memuse["numperm"] : 0);
-      const minpermVals = docs.map(d => d.memuse ? d.memuse["minperm"] : 0);
-      const maxpermVals = docs.map(d => d.memuse ? d.memuse["maxperm"] : 0);
+      const numpermVals = docs.map(d => d.memuse ? d.memuse["numperm"] : null);
+      const minpermVals = docs.map(d => d.memuse ? d.memuse["minperm"] : null);
+      const maxpermVals = docs.map(d => d.memuse ? d.memuse["maxperm"] : null);
       Plotly.newPlot('fs_cache_chart', [
-        {{ x: times, y: numpermVals, mode: 'lines', name: 'numperm' }},
-        {{ x: times, y: minpermVals, mode: 'lines', name: 'minperm' }},
-        {{ x: times, y: maxpermVals, mode: 'lines', name: 'maxperm' }}
+        {{ x: times, y: numpermVals, mode: 'lines', name: 'numperm' , connectgaps: false }},
+        {{ x: times, y: minpermVals, mode: 'lines', name: 'minperm' , connectgaps: false}},
+        {{ x: times, y: maxpermVals, mode: 'lines', name: 'maxperm' , connectgaps: false}}
       ], {{
         title: 'FS Cache Memory Use (numperm) Percentage (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time', range: xRange }},
@@ -1673,15 +1709,15 @@ function setupFullscreen() {{
       }}).then(gd => linkCharts('fs_cache_chart'));
 
       // 9) MEMNEW
-      const memSystem = docs.map(d => d.memnew ? d.memnew["System%"]  : 0);
-      const memFScache = docs.map(d => d.memnew ? d.memnew["FScache%"] : 0);
-      const memProcess = docs.map(d => d.memnew ? d.memnew["Process%"] : 0);
-      const memFree = docs.map(d => d.memnew ? d.memnew["Free%"] : 0);
+      const memSystem = docs.map(d => d.memnew ? d.memnew["System%"]  : null);
+      const memFScache = docs.map(d => d.memnew ? d.memnew["FScache%"] : null);
+      const memProcess = docs.map(d => d.memnew ? d.memnew["Process%"] : null);
+      const memFree = docs.map(d => d.memnew ? d.memnew["Free%"] : null);
       Plotly.newPlot('memnew_chart', [
-        {{ x: times, y: memProcess, mode: 'lines', name: 'Process%', stackgroup: 'one', line: {{ color: '#1f77b4' }} }},
-        {{ x: times, y: memFScache, mode: 'lines', name: 'FScache%', stackgroup: 'one', line: {{ color: '#d62728' }} }},
-        {{ x: times, y: memSystem, mode: 'lines', name: 'System%',  stackgroup: 'one', line: {{ color: '#ff7f0e' }} }},
-        {{ x: times, y: memFree,    mode: 'lines', name: 'Free%',    stackgroup: 'one', line: {{ color: '#2ca02c' }} }}
+        {{ x: times, y: memProcess, mode: 'lines', name: 'Process%', stackgroup: 'one', line: {{ color: '#1f77b4' }} , connectgaps: false }},
+        {{ x: times, y: memFScache, mode: 'lines', name: 'FScache%', stackgroup: 'one', line: {{ color: '#d62728' }} , connectgaps: false}},
+        {{ x: times, y: memSystem, mode: 'lines', name: 'System%',  stackgroup: 'one', line: {{ color: '#ff7f0e' }} , connectgaps: false}},
+        {{ x: times, y: memFree,    mode: 'lines', name: 'Free%',    stackgroup: 'one', line: {{ color: '#2ca02c' }} , connectgaps: false }}
       ], {{
         title: 'Memory Usage (MEMNEW) (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time' }},
@@ -2710,6 +2746,91 @@ function setupFullscreen() {{
          xaxis: {{ title: 'Time', range: xRange }},
          yaxis: {{ title: 'Packets/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('sea_packet_chart'));
+      // NEW: SEAPHY (READ/WRITE (KB/s)) chart
+      const seaphyTracesByInterface = {{}};
+      docs.forEach(d => {{
+        if (d.seachphy) {{
+          const time = parseTimestamp(d["@timestamp"]);
+          for (const colName in d.seachphy) {{
+            if (colName.endsWith('_read-KB/s') || colName.endsWith('_write-KB/s')) {{
+              const parts = colName.split('_');
+              const iface = parts[0];
+              const metric = parts[1]; // read-KB/s or write-KB/s
+              if (!seaphyTracesByInterface[iface]) {{
+                seaphyTracesByInterface[iface] = {{ read: {{ x: [], y: [] }}, write: {{ x: [], y: [] }} }};
+              }}
+              if (metric.startsWith('read')) {{
+                seaphyTracesByInterface[iface].read.x.push(time);
+                seaphyTracesByInterface[iface].read.y.push(d.seachphy[colName]);
+              }} else if (metric.startsWith('write')) {{
+                seaphyTracesByInterface[iface].write.x.push(time);
+                seaphyTracesByInterface[iface].write.y.push(-Math.abs(d.seachphy[colName]));
+              }}
+            }}
+          }}
+        }}
+      }});
+      const seaphyTraces = [];
+      for (const iface in seaphyTracesByInterface) {{
+        seaphyTraces.push({{
+          x: seaphyTracesByInterface[iface].read.x,
+          y: seaphyTracesByInterface[iface].read.y,
+          mode: 'lines',
+          name: iface + ' read'
+        }});
+        seaphyTraces.push({{
+          x: seaphyTracesByInterface[iface].write.x,
+          y: seaphyTracesByInterface[iface].write.y,
+          mode: 'lines',
+          name: iface + ' write'
+        }});
+      }}
+      Plotly.newPlot('sea_phy_rw_chart', seaphyTraces, {{
+        title: 'SEAPHY (READ/WRITE KB/s) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time', range: xRange }},
+        yaxis: {{ title: 'KB/s', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('sea_phy_rw_chart'));
+
+      // NEW: SEAPHY Read/Write Summary chart
+      const seaphySummaryData = {{}};
+      Object.entries(seaphyTracesByInterface).forEach(([iface,obj])=>{{
+        seaphySummaryData[iface] = {{
+          read: obj.read.y.slice(),
+          write: obj.write.y.map(v=>Math.abs(v))
+        }};
+      }});
+      const seaphyIfaces = Object.keys(seaphySummaryData).sort();
+      const seaphyMeanRead=[], seaphyMeanWrite=[], seaphyMaxRead=[], seaphyMaxWrite=[];
+      seaphyIfaces.forEach(iface=>{{
+        const reads = seaphySummaryData[iface].read;
+        const writes = seaphySummaryData[iface].write;
+        const mRead = reads.length ? reads.reduce((a,b)=>a+b,0)/reads.length : 0;
+        const mWrite = writes.length ? -(writes.reduce((a,b)=>a+b,0)/writes.length) : 0;
+        const xRead = reads.length ? Math.max(...reads) : 0;
+        const xWrite = writes.length ? -Math.max(...writes) : 0;
+        seaphyMeanRead.push(mRead);
+        seaphyMeanWrite.push(mWrite);
+        seaphyMaxRead.push(xRead);
+        seaphyMaxWrite.push(xWrite);
+      }});
+      Plotly.newPlot('sea_phy_summary_chart', [
+        {{ x: seaphyIfaces, y: seaphyMeanRead, type:'bar', name:'Mean Read',
+          marker:{{color:'#1f77b4'}}, offsetgroup:'meanSP', legendgroup:'meanSP' }},
+        {{ x: seaphyIfaces, y: seaphyMeanWrite, type:'bar', name:'Mean Write',
+          marker:{{color:'#2ca02c'}}, offsetgroup:'meanSP', legendgroup:'meanSP', base:0 }},
+        {{ x: seaphyIfaces, y: seaphyMaxRead, type:'bar', name:'Max Read',
+          marker:{{color:'#ff7f0e'}}, offsetgroup:'maxSP', legendgroup:'maxSP' }},
+        {{ x: seaphyIfaces, y: seaphyMaxWrite, type:'bar', name:'Max Write',
+          marker:{{color:'#d62728'}}, offsetgroup:'maxSP', legendgroup:'maxSP', base:0 }}
+      ], {{
+        title: 'SEAPHY Read/Write Summary (' + lparSelect.value + ')',
+        barmode: 'group',
+        bargap: 0.05,
+        bargroupgap: 0.0,
+        xaxis: {{ title:'SEA PHY Interface' }},
+        yaxis: {{ title:'KB/s', autorange:true }}
+      }}).then(gd => linkCharts('sea_phy_summary_chart'));
+
       // NEW: SEA PHY Errors (Transmit/Receive) chart
       const seaPhyTransmitErr = [];
       const seaPhyReceiveErr = [];
@@ -2769,6 +2890,108 @@ function setupFullscreen() {{
     renderCharts();
     setupFullscreen();
   </script>
+
+<!-- COMPARISON_MODE_START -->
+<style>
+body.comparison-mode #chartsContainer {{ margin-top: 215px; }}
+.comparison {{ pointer-events:auto !important; }}
+</style>
+<script>
+document.addEventListener('DOMContentLoaded', () => {{
+  /* ------ Globals ------ */
+  let comparisonMode = false;
+  const chartIds = [...document.querySelectorAll('#chartsContainer > div > div')].map(d=>d.id);
+
+  /* ------ Build secondary menu ------ */
+  const menuA = document.querySelector('.menu');
+  const menuB = menuA.cloneNode(true);
+  menuB.id = 'menu_b';
+  menuB.querySelectorAll('[id]').forEach(el => el.id += '_b');
+  menuB.style.display = 'none';
+  menuB.style.position = 'absolute';
+  menuB.style.top = (menuA.offsetTop + menuA.offsetHeight + 6) + 'px';
+  menuA.after(menuB);
+
+  /* fill LPAR list B */
+  const selA = document.getElementById('lpar_select');
+  const selB = document.getElementById('lpar_select_b');
+  Object.keys(lparDataMap).sort().forEach(n=>{{ const o=document.createElement('option'); o.value=n;o.textContent=n; selB.appendChild(o); }});
+  selB.value = selA.value;
+
+  /* ---- create empty comparison divs ---- */
+  chartIds.forEach(id=>{{
+      const box=document.getElementById(id).parentElement;
+      const clone=box.cloneNode(false); // shallow
+      const inner=document.createElement('div'); inner.id=id+'_b';
+      clone.appendChild(inner);
+      clone.classList.add('comparison');
+      clone.style.display='none';
+      box.after(clone);
+  }});
+
+  function filterDocs(lpar,start,end,map){{
+      let d=(map[lpar]||[]).slice();
+      if(start) d=d.filter(x=>parseTimestamp(x['@timestamp'])>=new Date(start));
+      if(end){{ const e=new Date(end);e.setHours(23,59,59,999); d=d.filter(x=>parseTimestamp(x['@timestamp'])<=e);}}
+      return d.sort((a,b)=>parseTimestamp(a['@timestamp'])-parseTimestamp(b['@timestamp']));
+  }}
+
+  /* clone full figure from A to B */
+  function copyFigure(idSuffix){{
+      const fig=Plotly.Plots.graphJson(document.getElementById(idSuffix.replace('_b','')));
+      Plotly.newPlot(idSuffix, fig.data, fig.layout, {{displayModeBar:true, responsive:true}});
+  }}
+
+  function renderChartsB(){{
+      const lpar=selB.value;
+      const start=document.getElementById('start_date_b').value;
+      const end=document.getElementById('end_date_b').value;
+
+      /* temporarily override data helpers used by original renderCharts */
+      const origGet=getFilteredDocs, origTop=getFilteredTopDocs;
+      getFilteredDocs=()=>filterDocs(lpar,start,end,lparDataMap);
+      getFilteredTopDocs=()=>filterDocs(lpar,start,end,topDataMap);
+
+      /* call original renderer but target hidden div ids */
+      chartIds.forEach(id=>{{document.getElementById(id).id=id+'_temp';}});
+      chartIds.forEach(id=>{{document.getElementById(id+'_b').id=id;}});
+      renderCharts();                                         // draw into B
+      chartIds.forEach(id=>{{document.getElementById(id).id=id+'_b';}});
+      chartIds.forEach(id=>{{document.getElementById(id+'_temp').id=id;}});
+
+      /* restore helpers */
+      getFilteredDocs=origGet; getFilteredTopDocs=origTop;
+
+      /* ensure modebars present */
+      chartIds.forEach(id=>copyFigure(id+'_b'));
+  }}
+
+  /* toggle comparison */
+  document.getElementById('compareToggle').addEventListener('click', ()=>{{
+      comparisonMode=!comparisonMode;
+      document.body.classList.toggle('comparison-mode',comparisonMode);
+      menuB.style.display=comparisonMode?'block':'none';
+      document.querySelectorAll('.comparison').forEach(e=>e.style.display=comparisonMode?'block':'none');
+      if(comparisonMode){{ renderChartsB(); }}
+  }});
+
+  /* change listeners */
+  ['lpar_select_b','start_date_b','end_date_b'].forEach(id=>{{
+     document.getElementById(id).addEventListener('change',()=>{{ if(comparisonMode) renderChartsB(); }});
+  }});
+
+  /* dark mode observer */
+  const obs=new MutationObserver(()=>{{
+    const dark=document.body.classList.contains('dark-mode');
+    const layout=dark?{{ plot_bgcolor:'#0d1b2a', paper_bgcolor:'#0d1b2a', 'font.color':'white','xaxis.color':'white','yaxis.color':'white'}}:
+                      {{ plot_bgcolor:null, paper_bgcolor:null, 'font.color':null,'xaxis.color':null,'yaxis.color':null}};
+    [...chartIds, ...chartIds.map(i=>i+'_b')].forEach(cid=>{{ const el=document.getElementById(cid); if(el) Plotly.relayout(el,layout);}});
+  }});
+  obs.observe(document.body,{{attributes:true,attributeFilter:['class']}});
+}});
+</script>
+<!-- COMPARISON_MODE_END -->
+
 </body>
 </html>"""
 
