@@ -804,7 +804,7 @@ def write_ndjson(docs, filepath):
 #        just before the TOP Commands by %CPU chart.
 ################################################################################
 
-def generate_html_page(lpar_data_map, top_data_map, output_html):
+def generate_html_page(lpar_data_map, top_data_map, frame_map, output_html):
     """
     Original charts: 16 charts + 5 new DISK/VG charts.
     Added:
@@ -829,6 +829,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     """
     embedded_all = json.dumps(lpar_data_map)
     embedded_top = json.dumps(top_data_map)
+    embedded_frames = json.dumps(frame_map)
 
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -965,6 +966,9 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
   </div>
   <img src="nmon2plotly.png" alt="nmon2plotly logo" class="logo" />
   <div class="menu">
+    <label for="frame_select">Select FRAME:</label>
+    <select id="frame_select"></select>
+    &nbsp;&nbsp;
     <label for="lpar_select">Select LPAR:</label>
     <select id="lpar_select"></select>
     &nbsp;&nbsp;
@@ -1023,6 +1027,8 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
     <div class="chart-container"><div id="top_cpu_chart"></div></div>
     <!-- NEW: TOP Commands by %CPU (Stacked) chart -->
     <div class="chart-container"><div id="top_cpu_stacked_chart"></div></div>
+    <!-- NEW: Top 20 Process PIDs by CPU Correlation (Bubble) -->
+    <div class="chart-container"><div id="top_pid_bubble_chart"></div></div>
     <!-- NEW: Top 20 Process PIDs by CPU chart (Unstacked) -->
     <div class="chart-container"><div id="top_pid_chart"></div></div>
     <!-- NEW: Top 20 Process PIDs by CPU (Stacked) chart -->
@@ -1093,6 +1099,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
   <script>
     const lparDataMap = {embedded_all};
     const topDataMap  = {embedded_top};
+    const frameMap    = {embedded_frames};
 
     // Global array for chart div IDs; note the new "top_bubble_chart" is inserted right after "fileio_chart".
     const chartIds = [
@@ -1109,6 +1116,7 @@ def generate_html_page(lpar_data_map, top_data_map, output_html):
       "top_bubble_chart",
       "top_cpu_chart",
       "top_cpu_stacked_chart",
+      "top_pid_bubble_chart",
       "top_pid_chart",
       "top_pid_stacked_chart",
       "fs_cache_chart",
@@ -1210,15 +1218,32 @@ function setupFullscreen() {{
       return new Date(ts);
     }}
 
-    // LPAR dropdown
+    // FRAME & LPAR dropdowns
+    const frameSelect = document.getElementById("frame_select");
     const lparSelect = document.getElementById("lpar_select");
-    const lparNames = Object.keys(lparDataMap).sort();
-    for (const nm of lparNames) {{
+
+    const frames = Array.from(new Set(Object.values(frameMap))).sort();
+    for (const fr of frames) {{
       const opt = document.createElement("option");
-      opt.value = nm;
-      opt.text = nm;
-      lparSelect.appendChild(opt);
+      opt.value = fr;
+      opt.text = fr;
+      frameSelect.appendChild(opt);
     }}
+
+    function populateLpars() {{
+      const frameVal = frameSelect.value;
+      lparSelect.innerHTML = "";
+      Object.keys(frameMap).sort().forEach(nm => {{
+        if (frameMap[nm] === frameVal) {{
+          const opt = document.createElement("option");
+          opt.value = nm;
+          opt.text = nm;
+          lparSelect.appendChild(opt);
+        }}
+      }});
+    }}
+
+    populateLpars();
 
     function getFilteredDocs() {{
       const sel = lparSelect.value;
@@ -1617,9 +1642,63 @@ function setupFullscreen() {{
              xaxis: {{ title: 'Time' }},
              yaxis: {{ title: '%CPU (per command)', rangemode: 'tozero' }}
          }}).then(gd => linkCharts('top_cpu_stacked_chart'));
+
       }} else {{
          document.getElementById("top_cpu_stacked_chart").innerHTML = "<p>No TOP data</p>";
       }}
+
+      // NEW: Top 20 Process PIDs by CPU Correlation (Bubble)
+      if (!topdocs.length) {{
+         document.getElementById("top_pid_bubble_chart").innerHTML = "<p>No TOP data</p>";
+      }} else {{
+         let bubbleDataPid = {{}};
+         topdocs.forEach(function(td) {{
+              let pid = td["PID"] || "unknown";
+              let cpuVal = td["%CPU"] || 0;
+              let charioVal = td["CharIO"] || 0;
+              let memVal = td["Memory"] || 0;
+              if (!(pid in bubbleDataPid)) {{
+                  bubbleDataPid[pid] = {{ cpu: 0, chario: 0, mem: 0 }};
+              }}
+              bubbleDataPid[pid].cpu += cpuVal;
+              bubbleDataPid[pid].chario += charioVal;
+              if (memVal > bubbleDataPid[pid].mem) {{
+                  bubbleDataPid[pid].mem = memVal;
+              }}
+         }});
+         let bubbleArrayPid = [];
+         for (let p in bubbleDataPid) {{
+              bubbleArrayPid.push({{ pid: p, cpu: bubbleDataPid[p].cpu, chario: bubbleDataPid[p].chario / 1024, mem: bubbleDataPid[p].mem }});
+         }}
+         bubbleArrayPid.sort((a,b) => b.cpu - a.cpu);
+         bubbleArrayPid = bubbleArrayPid.slice(0,20);
+         let maxSizePid = Math.max(...bubbleArrayPid.map(item => item.mem));
+         let bubbleTracesPid = bubbleArrayPid.map(item => {{
+              return {{
+                x: [item.cpu],
+                y: [item.chario],
+                text: [item.pid],
+                name: item.pid,
+                mode: 'markers',
+                marker: {{
+                  size: [item.mem],
+                  sizemode: 'area',
+                  sizeref: 2.0 * maxSizePid / (100**2),
+                  sizemin: 4
+                }},
+                hovertemplate: 'PID: %{{text}}<br>CPU: %{{x:.1f}}<br>Char I/O: %{{y:.1f}} KB<br>Memory: %{{marker.size}} KB<extra></extra>'
+              }};
+         }});
+         Plotly.newPlot('top_pid_bubble_chart', bubbleTracesPid, {{
+              title: {{ text: `Top 20 Process PIDs by CPU Correlation  (${{lparSelect.value}})<br><span style="font-size:12px">(Total CPU Seconds, Character I/O, Max Memory Size)</span>`, x: 0.5, xanchor:'center'}},
+              xaxis: {{ title: 'CPU seconds in Total' }},
+              yaxis: {{ title: 'Character I/O in Total (KB)' }},
+              legend: {{ x: 1.05, y: 1, orientation: 'v', font: {{ size: 10 }} }},
+              margin: {{ t: 50, r: 150 }}
+         }}).then(gd => linkCharts('top_pid_bubble_chart'));
+      }}
+
+      // NEW: Top 20 Process PIDs by CPU (Unstacked)
 
       // NEW: Top 20 Process PIDs by CPU (Unstacked)
       let totalByPid = {{}};
@@ -2885,6 +2964,7 @@ function setupFullscreen() {{
 
     document.getElementById("chartsPerRow").addEventListener("change", renderCharts);
     lparSelect.addEventListener("change", renderCharts);
+    frameSelect.addEventListener("change", () => {{ populateLpars(); renderCharts(); }});
 
     // initial rendering, then link all charts
     renderCharts();
@@ -2912,10 +2992,23 @@ document.addEventListener('DOMContentLoaded', () => {{
   menuB.style.top = (menuA.offsetTop + menuA.offsetHeight + 6) + 'px';
   menuA.after(menuB);
 
-  /* fill LPAR list B */
+  /* fill FRAME & LPAR list B */
   const selA = document.getElementById('lpar_select');
   const selB = document.getElementById('lpar_select_b');
-  Object.keys(lparDataMap).sort().forEach(n=>{{ const o=document.createElement('option'); o.value=n;o.textContent=n; selB.appendChild(o); }});
+  const frameA = document.getElementById('frame_select');
+  const frameB = document.getElementById('frame_select_b');
+
+  frameB.innerHTML = '';
+  Array.from(new Set(Object.values(frameMap))).sort().forEach(fr => {{ const o=document.createElement('option'); o.value=fr; o.textContent=fr; frameB.appendChild(o); }});
+  frameB.value = frameA.value;
+
+  function populateLparsB() {{
+      selB.innerHTML = '';
+      Object.keys(frameMap).sort().forEach(n => {{ if(frameMap[n] === frameB.value){{ const o=document.createElement('option'); o.value=n; o.textContent=n; selB.appendChild(o); }} }});
+      if(!selB.value && selB.options.length) selB.value = selB.options[0].value;
+  }}
+
+  populateLparsB();
   selB.value = selA.value;
 
   /* ---- create empty comparison divs ---- */
@@ -2976,8 +3069,8 @@ document.addEventListener('DOMContentLoaded', () => {{
   }});
 
   /* change listeners */
-  ['lpar_select_b','start_date_b','end_date_b'].forEach(id=>{{
-     document.getElementById(id).addEventListener('change',()=>{{ if(comparisonMode) renderChartsB(); }});
+  ['frame_select_b','lpar_select_b','start_date_b','end_date_b'].forEach(id=>{{
+     document.getElementById(id).addEventListener('change',()=>{{ if(id==='frame_select_b'){{ populateLparsB(); }} if(comparisonMode){{ renderChartsB(); }} }});
   }});
 
   /* dark mode observer */
@@ -3004,6 +3097,16 @@ document.addEventListener('DOMContentLoaded', () => {{
 ################################################################################
 
 def process_file(nmon_file, output_dir):
+    # Determine frame (SerialNumber) for this nmon file
+    frame = None
+    with open(nmon_file, 'r', encoding='utf-8') as meta_f:
+        for line in meta_f:
+            if line.startswith('AAA,SerialNumber'):
+                parts = line.strip().split(',')
+                if len(parts) > 2:
+                    frame = parts[2].strip()
+                break
+
     (
         cpu_data,
         lpar_data,
@@ -3220,7 +3323,7 @@ def process_file(nmon_file, output_dir):
     write_ndjson(top_docs, top_path)
     print(f"Wrote {len(top_docs)} top docs => {top_path}")
 
-    return (node, all_docs, top_docs)
+    return (node, frame, all_docs, top_docs)
 
 ################################################################################
 # 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA, SEA Stacked, SEA Packets/s, MEM MB, Top PID charts)
@@ -3243,21 +3346,23 @@ def main():
 
     lpar_data_map = {}
     top_data_map = {}
+    frame_map = {}
     tasks = [(fp, args.output_dir) for fp in nmon_files]
 
     with Pool(processes=args.processes) as p:
         results = p.starmap(process_file, tasks)
 
-    for (nodeName, all_docs, top_docs) in results:
+    for (nodeName, frameName, all_docs, top_docs) in results:
         if nodeName not in lpar_data_map:
             lpar_data_map[nodeName] = []
         if nodeName not in top_data_map:
             top_data_map[nodeName] = []
+        frame_map[nodeName] = frameName
         lpar_data_map[nodeName].extend(all_docs)
         top_data_map[nodeName].extend(top_docs)
 
     html_output = os.path.join(args.output_dir, "index.html")
-    generate_html_page(lpar_data_map, top_data_map, html_output)
+    generate_html_page(lpar_data_map, top_data_map, frame_map, html_output)
     print("Completed. Open:", html_output)
 
 if __name__ == "__main__":
