@@ -1006,6 +1006,10 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, output_html):
       <option value="22">22</option>
       <option value="23">23</option>
     </select>
+    &nbsp;&nbsp;
+    <label for="lpar_search">Search LPAR:</label>
+    <input id="lpar_search" list="lpar_datalist" placeholder="Type LPAR name" />
+    <datalist id="lpar_datalist"></datalist>
   </div>
   <!-- All charts in #chartsContainer -->
   <div id="chartsContainer">
@@ -1221,6 +1225,9 @@ function setupFullscreen() {{
     // FRAME & LPAR dropdowns
     const frameSelect = document.getElementById("frame_select");
     const lparSelect = document.getElementById("lpar_select");
+    const lparSearch = document.getElementById("lpar_search");
+    const lparDataList = document.getElementById("lpar_datalist");
+    const allLpars = Object.keys(frameMap).sort();
 
     const frames = Array.from(new Set(Object.values(frameMap))).sort();
     for (const fr of frames) {{
@@ -1244,6 +1251,23 @@ function setupFullscreen() {{
     }}
 
     populateLpars();
+
+    // Populate datalist for LPAR search
+    allLpars.forEach(nm => {{
+      const opt = document.createElement('option');
+      opt.value = nm;
+      lparDataList.appendChild(opt);
+    }});
+
+    lparSearch.addEventListener('change', () => {{
+      const val = lparSearch.value;
+      if (allLpars.includes(val)) {{
+        frameSelect.value = frameMap[val] || frameSelect.value;
+        populateLpars();
+        lparSelect.value = val;
+        renderCharts();
+      }}
+    }});
 
     function getFilteredDocs() {{
       const sel = lparSelect.value;
