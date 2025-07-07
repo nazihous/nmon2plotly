@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<title>NMON InfluxDB Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+<h1>NMON InfluxDB Dashboard</h1>
+<div>
+  <label for="lpar">LPAR:</label>
+  <select id="lpar"></select>
+  <label for="start">Start:</label>
+  <input type="datetime-local" id="start" />
+  <label for="end">End:</label>
+  <input type="datetime-local" id="end" />
+  <button onclick="loadData()">Load</button>
+</div>
+<div id="cpu_chart" style="height:400px;"></div>
+<script>
+const bucket = 'nmon';
+async function init(){
+  const lpars = await fetch(`/lpars?bucket=${bucket}`).then(r=>r.json());
+  const sel = document.getElementById('lpar');
+  lpars.forEach(l=>{const o=document.createElement('option');o.value=l;o.text=l;sel.appendChild(o);});
+}
+async function loadData(){
+  const lpar=document.getElementById('lpar').value;
+  const start=document.getElementById('start').value;
+  const end=document.getElementById('end').value;
+  const flux = `from(bucket:"${bucket}") |> range(start: ${start?`time(v:"${start}Z")`:"-1h"}, stop: ${end?`time(v:"${end}Z")`:"now()"}) |> filter(fn:(r)=>r["lpar"]=="${lpar}" and r._measurement=="CPU_ALL")`;
+  const data = await fetch('/query?q='+encodeURIComponent(flux)).then(r=>r.json());
+  const times = data.map(d=>d._time);
+  const user = data.filter(d=>d._field=='User%').map(d=>d._value);
+  const sys = data.filter(d=>d._field=='Sys%').map(d=>d._value);
+  const trace1={x:times,y:user,name:'User%',type:'scatter'};
+  const trace2={x:times,y:sys,name:'Sys%',type:'scatter'};
+  Plotly.newPlot('cpu_chart',[trace1,trace2]);
+}
+init();
+</script>
+</body>
+</html>
