@@ -87,6 +87,11 @@ def parse_nmon_file(nmon_file):
     jfsfile_header = []
     jfsfile_data_by_tag = {}
 
+    # --- NEW: For LPM (BBBR lines) ---
+    lpm_data = []
+    bbbr_header = []
+    bbbr_header_parsed = False
+
     # --- NEW: For MEMUSE (FS Cache Memory Use data) ---
     # Only lines that start with MEMUSE and whose second field starts with T (e.g., "MEMUSE,T0001")
     memuse_data_by_tag = {}
@@ -122,7 +127,7 @@ def parse_nmon_file(nmon_file):
     file_io_header_parsed = False
     file_io_columns = []
 
-    with open(nmon_file, 'r', encoding='utf-8') as f:
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f:
         for chunk_lines in read_in_chunks(f):
             for line in chunk_lines:
                 line = line.strip()
@@ -543,6 +548,51 @@ def parse_nmon_file(nmon_file):
                         jfsfile_data_by_tag[tag] = d
                         continue
                 # -------------------------
+                # NEW: LPM (Live Partition Mobility) events from BBBR lines
+                # -------------------------
+                if key == 'BBBR':
+                    if (not bbbr_header_parsed) and parts[1] == '000':
+                        bbbr_header = parts
+                        bbbr_header_parsed = True
+                        continue
+                    if bbbr_header_parsed and re.match(r'0\d{2}', parts[1]):
+                        try:
+                            # Find indices from header
+                            when_idx = bbbr_header.index('when')
+                            check_idx = bbbr_header.index('check')
+                            pre_idx = bbbr_header.index('pre')
+                            post_idx = bbbr_header.index('post')
+                            posterror_idx = bbbr_header.index('posterror')
+                            old_serial_idx = bbbr_header.index('old_serialno')
+                            current_serial_idx = bbbr_header.index('current_serialno')
+
+                            time_str = parts[when_idx]
+                            full_timestamp = parse_date_time(fallback_date, time_str) if fallback_date else time_str
+
+                            state = None
+                            if len(parts) > check_idx and parts[check_idx] == 'check':
+                                state = 'check'
+                            elif len(parts) > pre_idx and parts[pre_idx] == 'pre':
+                                state = 'pre'
+                            elif len(parts) > post_idx and parts[post_idx] == 'post':
+                                state = 'post'
+                            elif len(parts) > posterror_idx and parts[posterror_idx] == 'posterror':
+                                state = 'posterror'
+
+                            if state:
+                                old_serial = parts[old_serial_idx]
+                                current_serial = parts[current_serial_idx]
+                                lpm_data.append({
+                                    'timestamp': full_timestamp,
+                                    'state': state,
+                                    'old_serial': old_serial,
+                                    'current_serial': current_serial
+                                })
+                        except (ValueError, IndexError):
+                            # Header not as expected, or data line malformed
+                            pass
+                    continue
+                # -------------------------
                 # NEW: MEMUSE (FS Cache Memory Use data)
                 # -------------------------
                 if key == 'MEMUSE' and len(parts) > 1 and parts[1].startswith('T'):
@@ -678,7 +728,8 @@ def parse_nmon_file(nmon_file):
         sea_data_by_tag,      # NEW: SEA data
         seachphy_data_by_tag,      # NEW: SEA PHY Errors & Drops data
         seapacket_data_by_tag, # NEW: SEA Packets/s data
-        cpu_use_data_by_tag   # NEW: CPU Use per logical CPU data
+        cpu_use_data_by_tag,   # NEW: CPU Use per logical CPU data
+        lpm_data
     )
 
 ################################################################################
@@ -802,9 +853,11 @@ def write_ndjson(docs, filepath):
 #
 #   NEW: A new bubble chart for TOPSUM (mimicking the nmonchart ksh script bubble chart) is added
 #        just before the TOP Commands by %CPU chart.
+#
+#   NEW: A new graph for LPM Migration Events (BBBR) is added after the JFS Percent Full chart.
 ################################################################################
 
-def generate_html_page(lpar_data_map, top_data_map, frame_map, output_html):
+def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, output_html):
     """
     Original charts: 16 charts + 5 new DISK/VG charts.
     Added:
@@ -826,9 +879,11 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, output_html):
              immediately after the fork() & exec() chart.
       (13) NEW: A new bubble chart for TOPSUM (Total CPU, Char I/O, Max Memory per Command)
              is added just before the TOP Commands by %CPU chart.
+      (14) NEW: A new point chart for LPM Migration Events is added after the JFS Percent Full chart.
     """
     embedded_all = json.dumps(lpar_data_map)
     embedded_top = json.dumps(top_data_map)
+    embedded_lpm = json.dumps(lpm_data_map)
     embedded_frames = json.dumps(frame_map)
 
     html_content = f"""<!DOCTYPE html>
@@ -911,7 +966,7 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, output_html):
     }}
     
     /* ======================================== */
-    /*  Make the top menu & chart borders dark  */
+    /* Make the top menu & chart borders dark  */
     /* ======================================== */
      body.dark-mode .menu {{ background-color: #0d1b2a !important;}}
      body.dark-mode .menu label,
@@ -950,7 +1005,6 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, output_html):
   
 </head>
 <body>
-  <!-- Dark mode toggle markup -->
   <div class="toggle-container">
     <div class="toggle" id="compareToggle">
       <div class="slider"></div>
@@ -1011,10 +1065,8 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, output_html):
     <input id="lpar_search" list="lpar_datalist" placeholder="Type LPAR name" />
     <datalist id="lpar_datalist"></datalist>
   </div>
-  <!-- All charts in #chartsContainer -->
   <div id="chartsContainer">
     <div class="chart-container"><div id="cpu_usage_chart"></div></div>
-    <!-- NEW: Average Use of Logical CPU Core Threads - POWER=SMT (Stacked Bar Chart) -->
     <div class="chart-container"><div id="cpu_use_chart"></div></div>
     <div class="chart-container"><div id="lpar_usage_chart"></div></div>
     <div class="chart-container"><div id="pool_usage_chart"></div></div>
@@ -1022,90 +1074,57 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, output_html):
     <div class="chart-container"><div id="syscall_chart"></div></div>
     <div class="chart-container"><div id="pswitch_chart"></div></div>
     <div class="chart-container"><div id="fork_exec_chart"></div></div>
-    <!-- NEW: InterProcess Comms - Semaphores/s & Message Queues send/s chart -->
     <div class="chart-container"><div id="sem_msg_chart"></div></div>
     <div class="chart-container"><div id="fileio_chart"></div></div>
-    <!-- NEW: TOPSUM Bubble Chart -->
     <div class="chart-container"><div id="top_bubble_chart"></div></div>
-    <!-- 8) TOP CPU - modified to align with ksh logic (by Command) -->
     <div class="chart-container"><div id="top_cpu_chart"></div></div>
-    <!-- NEW: TOP Commands by %CPU (Stacked) chart -->
     <div class="chart-container"><div id="top_cpu_stacked_chart"></div></div>
-    <!-- NEW: Top 20 Process PIDs by CPU Correlation (Bubble) -->
     <div class="chart-container"><div id="top_pid_bubble_chart"></div></div>
-    <!-- NEW: Top 20 Process PIDs by CPU chart (Unstacked) -->
     <div class="chart-container"><div id="top_pid_chart"></div></div>
-    <!-- NEW: Top 20 Process PIDs by CPU (Stacked) chart -->
     <div class="chart-container"><div id="top_pid_stacked_chart"></div></div>
-    <!-- NEW: FS Cache Memory Use (numperm) Percentage chart -->
     <div class="chart-container"><div id="fs_cache_chart"></div></div>
-    <!-- 9) MEMNEW chart -->
     <div class="chart-container"><div id="memnew_chart"></div></div>
-    <!-- NEW: MEM MB Usage chart -->
     <div class="chart-container"><div id="mem_mb_chart"></div></div>
-    <!-- 10) MEM used% chart -->
     <div class="chart-container"><div id="memused_chart"></div></div>
-    <!-- 11) Swap-in chart -->
     <div class="chart-container"><div id="swapin_chart"></div></div>
-    <!-- NEW: Paging chart (placed after Swap-in) -->
     <div class="chart-container"><div id="paging_chart"></div></div>
-    <!-- 12) NET read/write -->
     <div class="chart-container"><div id="net_chart"></div></div>
-    <!-- New: NET Stacked chart -->
     <div class="chart-container"><div id="net_stacked_chart"></div></div>
-    <!-- 13) NETPACKET chart -->
     <div class="chart-container"><div id="netpacket_chart"></div></div>
-    <!-- 14) NETSIZE chart -->
     <div class="chart-container"><div id="netsize_chart"></div></div>
-    <!-- 15) FC read/write -->
     <div class="chart-container"><div id="fc_chart"></div></div>
-    <!-- NEW: Fibre Channel Read/Write Summary chart -->
     <div class="chart-container"><div id="fc_summary_chart"></div></div>
-    <!-- New: FC Stacked chart -->
     <div class="chart-container"><div id="fc_stacked_chart"></div></div>
-    <!-- 16) FCXFER chart -->
     <div class="chart-container"><div id="fcxfer_chart"></div></div>
-    <!-- 17) DISK read/write -->
     <div class="chart-container"><div id="disk_read_write_chart"></div></div>
-    <!-- New: DISK Read/Write Stacked chart -->
     <div class="chart-container"><div id="disk_read_write_stacked_chart"></div></div>
-    <!-- 18) DISK busy -->
     <div class="chart-container"><div id="disk_busy_chart"></div></div>
-    <!-- 19) DISK wait -->
     <div class="chart-container"><div id="disk_wait_chart"></div></div>
-    <!-- 20) VG read/write -->
     <div class="chart-container"><div id="vg_read_write_chart"></div></div>
-    <!-- New: VG Read/Write Stacked chart -->
     <div class="chart-container"><div id="vg_read_write_stacked_chart"></div></div>
-    <!-- 21) VG busy -->
     <div class="chart-container"><div id="vg_busy_chart"></div></div>
-    <!-- 22) JFS Percent Full -->
     <div class="chart-container"><div id="jfs_percent_full_chart"></div></div>
-    <!-- NEW: SEA (READ/WRITE (KB/s)) chart -->
+    <div class="chart-container"><div id="lpm_chart"></div></div>
     <div class="chart-container"><div id="sea_chart"></div></div>
-    <!-- NEW: SEA Read/Write Summary chart -->
     <div class="chart-container"><div id="sea_summary_chart"></div></div>
-    <!-- NEW: SEA Read/Write - Stacked (KB/s) chart -->
     <div class="chart-container"><div id="sea_stacked_chart"></div></div>
-    <!-- NEW: SEA Packets/s chart -->
     <div class="chart-container"><div id="sea_packet_chart"></div></div>
 
-<!-- NEW: SEAPHY (READ/WRITE KB/s) chart -->
 <div class="chart-container"><div id="sea_phy_rw_chart"></div></div>
-<!-- NEW: SEAPHY Read/Write Summary chart -->
 <div class="chart-container"><div id="sea_phy_summary_chart"></div></div>
 
-    <!-- NEW: SEA PHY Errors chart -->
     <div class="chart-container"><div id="sea_phy_error_chart"></div></div>
-    <!-- NEW: SEA PHY Packets Dropped chart -->
     <div class="chart-container"><div id="sea_phy_drop_chart"></div></div>
   </div>
   <script>
     const lparDataMap = {embedded_all};
     const topDataMap  = {embedded_top};
+    const lpmDataMap  = {embedded_lpm};
     const frameMap    = {embedded_frames};
 
-    // Global array for chart div IDs; note the new "top_bubble_chart" is inserted right after "fileio_chart".
+    // --- MODIFICATION EXPLICITE : PARTIE 1 ---
+    // Ce tableau 'chartIds' est la liste principale de tous les graphiques.
+    // La fonction de synchronisation l'utilise pour savoir quels graphiques mettre à jour.
     const chartIds = [
       "cpu_usage_chart",
       "cpu_use_chart",
@@ -1145,6 +1164,7 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, output_html):
       "vg_read_write_stacked_chart",
       "vg_busy_chart",
       "jfs_percent_full_chart",
+      "lpm_chart",
       "sea_chart",
       "sea_summary_chart",
       "sea_stacked_chart",
@@ -1214,10 +1234,41 @@ function setupFullscreen() {{
     }});
   }});
 }}
-
-    // Global flag to avoid recursive relayout events
+    
+    // --- MODIFICATION EXPLICITE : PARTIE 2 ---
+    // La variable 'relayoutLock' et la fonction 'linkCharts' forment le cœur de la synchronisation.
+    // Cette fonction écoute les événements de zoom/pan sur un graphique et applique
+    // les changements à tous les autres graphiques listés dans 'chartIds'.
+    
+    // Variable pour éviter les boucles d'événements infinies
     var relayoutLock = false;
 
+    // Fonction pour lier les axes X de tous les graphiques
+    function linkCharts(chartId) {{
+      const chartDiv = document.getElementById(chartId);
+      if (!chartDiv) return;
+      chartDiv.on('plotly_relayout', (eventData) => {{
+        if (relayoutLock) return;
+        // Si l'événement contient des changements sur l'axe X, on les propage
+        const update = {{}};
+        if (eventData['xaxis.range[0]'] !== undefined && eventData['xaxis.range[1]'] !== undefined) {{
+          update['xaxis.range'] = [ eventData['xaxis.range[0]'], eventData['xaxis.range[1]'] ];
+        }}
+        if (eventData['xaxis.autorange'] === true) {{
+          update['xaxis.autorange'] = true;
+        }}
+        if (Object.keys(update).length > 0) {{
+          relayoutLock = true;
+          chartIds.forEach(otherId => {{
+            if (otherId !== chartId) {{
+              Plotly.relayout(otherId, update);
+            }}
+          }});
+          setTimeout(() => {{ relayoutLock = false; }}, 50);
+        }}
+      }});
+    }}
+    
     function parseTimestamp(ts) {{
       return new Date(ts);
     }}
@@ -1305,40 +1356,30 @@ function setupFullscreen() {{
       return tdocs;
     }}
 
+    function getFilteredLpmDocs() {{
+      const sel = lparSelect.value;
+      let lpmdocs = lpmDataMap[sel] || [];
+      const startVal = document.getElementById("start_date").value;
+      const endVal   = document.getElementById("end_date").value;
+      if (startVal) {{
+        const startDate = new Date(startVal);
+        lpmdocs = lpmdocs.filter(d => parseTimestamp(d["@timestamp"]) >= startDate);
+      }}
+      if (endVal) {{
+        const endDate = new Date(endVal);
+        endDate.setHours(23,59,59,999);
+        lpmdocs = lpmdocs.filter(d => parseTimestamp(d["@timestamp"]) <= endDate);
+      }}
+      lpmdocs.sort((a,b) => parseTimestamp(a["@timestamp"]) - parseTimestamp(b["@timestamp"]));
+      return lpmdocs;
+    }}
+
     function updateChartLayout() {{
       const cols = parseInt(document.getElementById("chartsPerRow").value);
       const chartContainers = document.querySelectorAll(".chart-container");
       const widthPercent = (100 / cols) + "%";
       chartContainers.forEach(cc => {{
         cc.style.width = widthPercent;
-      }});
-    }}
-
-    // -------------------------------
-    // Linked Zoom: synchronize x-axis
-    // -------------------------------
-    function linkCharts(chartId) {{
-      const chartDiv = document.getElementById(chartId);
-      if (!chartDiv) return;
-      chartDiv.on('plotly_relayout', (eventData) => {{
-        if (relayoutLock) return;
-        // If eventData includes changes in the x-axis, then broadcast them
-        const update = {{}};
-        if (eventData['xaxis.range[0]'] !== undefined && eventData['xaxis.range[1]'] !== undefined) {{
-          update['xaxis.range'] = [ eventData['xaxis.range[0]'], eventData['xaxis.range[1]'] ];
-        }}
-        if (eventData['xaxis.autorange'] === true) {{
-          update['xaxis.autorange'] = true;
-        }}
-        if (Object.keys(update).length > 0) {{
-          relayoutLock = true;
-          chartIds.forEach(otherId => {{
-            if (otherId !== chartId) {{
-              Plotly.relayout(otherId, update);
-            }}
-          }});
-          setTimeout(() => {{ relayoutLock = false; }}, 50);
-        }}
       }});
     }}
 
@@ -1368,7 +1409,11 @@ function setupFullscreen() {{
         title: 'CPU Usage (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time', range: xRange }},
         yaxis: {{ title: 'Percentage' }}
-      }}).then(gd => linkCharts('cpu_usage_chart'));
+      }})
+      // --- MODIFICATION EXPLICITE : PARTIE 3 ---
+      // C'est ici que nous connectons la fonction à chaque graphique.
+      // Le '.then()' garantit que la liaison se fait après la création du graphique.
+      .then(gd => linkCharts('cpu_usage_chart'));
 
       // NEW: Average Use of Logical CPU Core Threads - POWER=SMT (Stacked Bar Chart)
       let cpuAgg = {{}};
@@ -1421,7 +1466,9 @@ function setupFullscreen() {{
          barmode: 'stack',
          xaxis: {{ title: 'CPU Core' }},
          yaxis: {{ title: '% Usage' }}
-      }}).then(gd => linkCharts('cpu_usage_chart'));
+      }})
+      // --- MODIFICATION EXPLICITE : PARTIE 3 (répétée pour chaque graphique) ---
+      .then(gd => linkCharts('cpu_use_chart'));
 
       // 2) LPAR usage
       const physVals = docs.map(d => d.lpar ? d.lpar["PhysicalCPU"] : null);
@@ -2690,6 +2737,45 @@ function setupFullscreen() {{
         yaxis: {{ title: 'Percentage', range: [0, 100] }}
       }}).then(gd => linkCharts('jfs_percent_full_chart'));
 
+// NEW: LPM Migration Chart
+const lpmDocs = getFilteredLpmDocs();
+if (!lpmDocs.length) {{
+  document.getElementById('lpm_chart').innerHTML = '<p>No LPM data</p>';
+}} else {{
+  // Create an array of y-axis categories in chronological order
+  const yCategoryLabels = [...new Set(lpmDocs.map(d => `${{d.old_serial}} -> ${{d.current_serial}}`))];
+
+  const traces = {{
+    check: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'check', marker: {{ color: 'blue' }} }},
+    pre: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'pre', marker: {{ color: 'yellow', line: {{ color: 'black', width: 1 }} }} }},
+    post: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'post', marker: {{ color: 'green' }} }},
+    posterror: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'posterror', marker: {{ color: 'red' }} }}
+  }};
+
+  lpmDocs.forEach(d => {{
+    const state = d.state;
+    if (traces[state]) {{
+      traces[state].x.push(parseTimestamp(d['@timestamp']));
+      const y_val = `${{d.old_serial}} -> ${{d.current_serial}}`;
+      traces[state].y.push(y_val);
+    }}
+  }});
+
+  Plotly.newPlot('lpm_chart', Object.values(traces), {{
+    title: 'LPM Migration Events (' + lparSelect.value + ')',
+    xaxis: {{ title: 'Time', range: xRange }},
+    yaxis: {{
+      title: 'Serial Number Transition',
+      type: 'category',
+      automargin: true,
+      // --- Add these two lines to enforce chronological order ---
+      categoryorder: 'array',
+      categoryarray: yCategoryLabels
+    }}
+  }}).then(gd => linkCharts('lpm_chart'));
+}}
+
+
       // NEW: SEA (READ/WRITE (KB/s)) chart (unstacked)
       const seaTracesByInterface = {{}};
       docs.forEach(d => {{
@@ -2995,7 +3081,6 @@ function setupFullscreen() {{
     setupFullscreen();
   </script>
 
-<!-- COMPARISON_MODE_START -->
 <style>
 body.comparison-mode #chartsContainer {{ margin-top: 215px; }}
 .comparison {{ pointer-events:auto !important; }}
@@ -3107,14 +3192,12 @@ document.addEventListener('DOMContentLoaded', () => {{
   obs.observe(document.body,{{attributes:true,attributeFilter:['class']}});
 }});
 </script>
-<!-- COMPARISON_MODE_END -->
-
 </body>
 </html>"""
 
     with open(output_html, "w", encoding="utf-8") as f:
         f.write(html_content)
-    print("Wrote HTML (16 existing charts + DISK/VG charts, plus new Paging, FS Cache, unstacked SEA, stacked SEA, SEA Packets/s, MEM MB, Top PID, CPU Use, Bubble and InterProcess Comms charts) to:", output_html)
+    print("Wrote HTML (16 existing charts + DISK/VG charts, plus new Paging, FS Cache, unstacked SEA, stacked SEA, SEA Packets/s, MEM MB, Top PID, CPU Use, Bubble, InterProcess Comms, and LPM charts) to:", output_html)
 
 ################################################################################
 # 5. process_file => parse => NDJSON => return
@@ -3123,7 +3206,7 @@ document.addEventListener('DOMContentLoaded', () => {{
 def process_file(nmon_file, output_dir):
     # Determine frame (SerialNumber) for this nmon file
     frame = None
-    with open(nmon_file, 'r', encoding='utf-8') as meta_f:
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as meta_f:
         for line in meta_f:
             if line.startswith('AAA,SerialNumber'):
                 parts = line.strip().split(',')
@@ -3158,7 +3241,8 @@ def process_file(nmon_file, output_dir):
         sea_data_by_tag,      # NEW: SEA data
         seachphy_data_by_tag,      # NEW: SEA PHY Errors & Drops data
         seapacket_data_by_tag, # NEW: SEA Packets/s data
-        cpu_use_data_by_tag   # NEW: CPU Use per logical CPU data
+        cpu_use_data_by_tag,   # NEW: CPU Use per logical CPU data
+        lpm_data
     ) = parse_nmon_file(nmon_file)
 
     # --- Already-existing logic for "fc" read/write and "netsize" --- 
@@ -3167,7 +3251,7 @@ def process_file(nmon_file, output_dir):
     fc_by_tag = {}
     fc_read_header = []
     fc_write_header = []
-    with open(nmon_file, 'r', encoding='utf-8') as f2:
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f2:
         for line in f2:
             line = line.strip()
             if not line:
@@ -3208,7 +3292,7 @@ def process_file(nmon_file, output_dir):
                         fc_by_tag[tag][f"{iface}-write"] = val
 
     net_size_by_tag = {}
-    with open(nmon_file, 'r', encoding='utf-8') as f3:
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f3:
         for line in f3:
             line = line.strip()
             if not line:
@@ -3235,7 +3319,7 @@ def process_file(nmon_file, output_dir):
     fcxfer_by_tag = {}
     fcxfer_in_header = []
     fcxfer_out_header = []
-    with open(nmon_file, 'r', encoding='utf-8') as f4:
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f4:
         for line in f4:
             line = line.strip()
             if not line:
@@ -3334,6 +3418,16 @@ def process_file(nmon_file, output_dir):
                              for cpu, rec in cpu_use_data_by_tag[the_tag].items() }
     top_docs = build_top_docs(top_data_by_tag, zzzz_map)
 
+    # NEW: Create LPM docs
+    lpm_docs = []
+    for item in lpm_data:
+        lpm_docs.append({
+            '@timestamp': item['timestamp'],
+            'state': item['state'],
+            'old_serial': item['old_serial'],
+            'current_serial': item['current_serial']
+        })
+
     base_name = os.path.splitext(os.path.basename(nmon_file))[0]
     out_all_dir = os.path.join(output_dir, "all")
     os.makedirs(out_all_dir, exist_ok=True)
@@ -3347,7 +3441,7 @@ def process_file(nmon_file, output_dir):
     write_ndjson(top_docs, top_path)
     print(f"Wrote {len(top_docs)} top docs => {top_path}")
 
-    return (node, frame, all_docs, top_docs)
+    return (node, frame, all_docs, top_docs, lpm_docs)
 
 ################################################################################
 # 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA, SEA Stacked, SEA Packets/s, MEM MB, Top PID charts)
@@ -3370,23 +3464,27 @@ def main():
 
     lpar_data_map = {}
     top_data_map = {}
+    lpm_data_map = {}
     frame_map = {}
     tasks = [(fp, args.output_dir) for fp in nmon_files]
 
     with Pool(processes=args.processes) as p:
         results = p.starmap(process_file, tasks)
 
-    for (nodeName, frameName, all_docs, top_docs) in results:
+    for (nodeName, frameName, all_docs, top_docs, lpm_docs) in results:
         if nodeName not in lpar_data_map:
             lpar_data_map[nodeName] = []
         if nodeName not in top_data_map:
             top_data_map[nodeName] = []
+        if nodeName not in lpm_data_map:
+            lpm_data_map[nodeName] = []
         frame_map[nodeName] = frameName
         lpar_data_map[nodeName].extend(all_docs)
         top_data_map[nodeName].extend(top_docs)
+        lpm_data_map[nodeName].extend(lpm_docs)
 
     html_output = os.path.join(args.output_dir, "index.html")
-    generate_html_page(lpar_data_map, top_data_map, frame_map, html_output)
+    generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, html_output)
     print("Completed. Open:", html_output)
 
 if __name__ == "__main__":
