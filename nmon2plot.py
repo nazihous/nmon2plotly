@@ -1096,6 +1096,7 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
     <div class="chart-container"><div id="fc_summary_chart"></div></div>
     <div class="chart-container"><div id="fc_stacked_chart"></div></div>
     <div class="chart-container"><div id="fcxfer_chart"></div></div>
+    <div class="chart-container"><div id="fc_san_stacked_chart"></div></div>
     <div class="chart-container"><div id="disk_read_write_chart"></div></div>
     <div class="chart-container"><div id="disk_read_write_stacked_chart"></div></div>
     <div class="chart-container"><div id="disk_busy_chart"></div></div>
@@ -1156,6 +1157,7 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
       "fc_summary_chart",
       "fc_stacked_chart",
       "fcxfer_chart",
+      "fc_san_stacked_chart",
       "disk_read_write_chart",
       "disk_read_write_stacked_chart",
       "disk_busy_chart",
@@ -2409,6 +2411,68 @@ function setupFullscreen() {{
         yaxis: {{ title: 'Transfers/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('fcxfer_chart'));
 
+      const fcSanMapDoc = docs.find(d => d.fc_san_map);
+      const fcSanMap = fcSanMapDoc ? fcSanMapDoc.fc_san_map : {{}};
+      const fcSanStackedTraces = [];
+      let fcSanReadIndex = 0;
+      let fcSanWriteIndex = 0;
+      for (const [colName, arrObj] of Object.entries(fcTracesByColumn)) {{
+        const dashIndex = colName.indexOf('-');
+        let iface = colName;
+        let direction = "";
+        if (dashIndex > 0) {{
+          iface = colName.substring(0, dashIndex);
+          direction = colName.substring(dashIndex + 1);
+        }}
+        const sanLabel = fcSanMap && fcSanMap[iface] ? fcSanMap[iface] : iface;
+        const traceName = sanLabel + " " + direction;
+        const clonedY = arrObj.y.map(v => v);
+        if (direction === 'write') {{
+          for (let i = 0; i < clonedY.length; i++) {{
+            clonedY[i] = -Math.abs(clonedY[i]);
+          }}
+        }}
+        let fillMode;
+        if (direction === 'read') {{
+          fillMode = (fcSanReadIndex === 0) ? 'tozeroy' : 'tonexty';
+          fcSanStackedTraces.push({{
+            x: arrObj.x,
+            y: clonedY,
+            mode: 'lines',
+            name: traceName,
+            stackgroup: 'fc_san_stacked_read',
+            fill: fillMode
+          }});
+          fcSanReadIndex++;
+        }} else if (direction === 'write') {{
+          fillMode = (fcSanWriteIndex === 0) ? 'tozeroy' : 'tonexty';
+          fcSanStackedTraces.push({{
+            x: arrObj.x,
+            y: clonedY,
+            mode: 'lines',
+            name: traceName,
+            stackgroup: 'fc_san_stacked_write',
+            fill: fillMode
+          }});
+          fcSanWriteIndex++;
+        }} else {{
+          fillMode = 'tozeroy';
+          fcSanStackedTraces.push({{
+            x: arrObj.x,
+            y: clonedY,
+            mode: 'lines',
+            name: traceName,
+            stackgroup: 'fc_san_stacked',
+            fill: fillMode
+          }});
+        }}
+      }}
+      Plotly.newPlot('fc_san_stacked_chart', fcSanStackedTraces, {{
+        title: 'Fibre Channel Read/Write by SAN ID - Stacked (KB/s) (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'KB/s' }}
+      }}).then(gd => linkCharts('fc_san_stacked_chart'));
+
       // 17) DISK read/write
       const diskNamesSet = new Set();
       docs.forEach(d => {{
@@ -3319,6 +3383,7 @@ def process_file(nmon_file, output_dir):
     fcxfer_by_tag = {}
     fcxfer_in_header = []
     fcxfer_out_header = []
+    fc_san_map = {}
     with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f4:
         for line in f4:
             line = line.strip()
@@ -3358,6 +3423,17 @@ def process_file(nmon_file, output_dir):
                         val = numeric_vals[i] if i < len(numeric_vals) else 0.0
                         fcxfer_by_tag.setdefault(tag, {})
                         fcxfer_by_tag[tag][f"{iface}-out"] = val
+            if key == 'BBBF' and len(parts) >= 6:
+                cleaned_parts = [p.strip() for p in parts]
+                if any('Port FC ID' in p for p in cleaned_parts):
+                    iface_name = cleaned_parts[3]
+                    id_field = cleaned_parts[-1]
+                    lower_field = id_field.lower()
+                    idx = lower_field.find('0x')
+                    if idx != -1 and len(id_field) >= idx + 4:
+                        san_id = id_field[idx + 2:idx + 4]
+                        if san_id:
+                            fc_san_map[iface_name] = san_id
 
     all_docs = build_all_docs(
         cpu_data,
@@ -3414,8 +3490,10 @@ def process_file(nmon_file, output_dir):
             d["mem_mb"] = mem_mb_data_by_tag[the_tag]
         # NEW: add CPU Use per logical CPU data if available (fixed)
         if the_tag and the_tag in cpu_use_data_by_tag:
-            d["cpu_use"] = { cpu: {"user": rec["user_sum"] / rec["count"], "sys": rec["sys_sum"] / rec["count"]} 
+            d["cpu_use"] = { cpu: {"user": rec["user_sum"] / rec["count"], "sys": rec["sys_sum"] / rec["count"]}
                              for cpu, rec in cpu_use_data_by_tag[the_tag].items() }
+        if fc_san_map:
+            d["fc_san_map"] = fc_san_map
     top_docs = build_top_docs(top_data_by_tag, zzzz_map)
 
     # NEW: Create LPM docs
