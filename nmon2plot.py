@@ -1092,10 +1092,13 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
     <div class="chart-container"><div id="net_stacked_chart"></div></div>
     <div class="chart-container"><div id="netpacket_chart"></div></div>
     <div class="chart-container"><div id="netsize_chart"></div></div>
+    <div class="chart-container"><div id="net_error_chart"></div></div>
     <div class="chart-container"><div id="fc_chart"></div></div>
     <div class="chart-container"><div id="fc_summary_chart"></div></div>
     <div class="chart-container"><div id="fc_stacked_chart"></div></div>
     <div class="chart-container"><div id="fcxfer_chart"></div></div>
+    <div class="chart-container"><div id="fc_san_chart"></div></div>
+    <div class="chart-container"><div id="fc_stacked_san_chart"></div></div>
     <div class="chart-container"><div id="disk_read_write_chart"></div></div>
     <div class="chart-container"><div id="disk_read_write_stacked_chart"></div></div>
     <div class="chart-container"><div id="disk_busy_chart"></div></div>
@@ -1121,6 +1124,64 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
     const topDataMap  = {embedded_top};
     const lpmDataMap  = {embedded_lpm};
     const frameMap    = {embedded_frames};
+
+    function traceHasOnlyZeroValues(trace) {{
+      if (!trace) {{
+        return false;
+      }}
+      const arraysToInspect = [];
+      if (Array.isArray(trace.y)) {{
+        arraysToInspect.push(trace.y);
+      }}
+      if (Array.isArray(trace.values)) {{
+        arraysToInspect.push(trace.values);
+      }}
+      if (trace.marker && Array.isArray(trace.marker.size)) {{
+        arraysToInspect.push(trace.marker.size);
+      }}
+      if (!arraysToInspect.length) {{
+        return false;
+      }}
+      let numericCount = 0;
+      let numericNonZero = 0;
+      let nonNullCount = 0;
+      arraysToInspect.forEach(arr => {{
+        if (!Array.isArray(arr)) {{
+          return;
+        }}
+        arr.forEach(val => {{
+          if (val !== null && val !== undefined) {{
+            nonNullCount++;
+          }}
+          if (typeof val === 'number' && isFinite(val)) {{
+            numericCount++;
+            if (Math.abs(val) > 1e-9) {{
+              numericNonZero++;
+            }}
+          }}
+        }});
+      }});
+      if (numericCount > 0) {{
+        return numericNonZero === 0;
+      }}
+      return nonNullCount === 0;
+    }}
+
+    const originalPlotlyNewPlot = Plotly.newPlot;
+    Plotly.newPlot = function() {{
+      const dataArg = arguments.length > 1 ? arguments[1] : null;
+      if (Array.isArray(dataArg)) {{
+        dataArg.forEach(trace => {{
+          if (!trace || trace.visible !== undefined) {{
+            return;
+          }}
+          if (traceHasOnlyZeroValues(trace)) {{
+            trace.visible = 'legendonly';
+          }}
+        }});
+      }}
+      return originalPlotlyNewPlot.apply(Plotly, arguments);
+    }};
 
     // --- MODIFICATION EXPLICITE : PARTIE 1 ---
     // Ce tableau 'chartIds' est la liste principale de tous les graphiques.
@@ -1152,10 +1213,13 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
       "net_stacked_chart",
       "netpacket_chart",
       "netsize_chart",
+      "net_error_chart",
       "fc_chart",
       "fc_summary_chart",
       "fc_stacked_chart",
       "fcxfer_chart",
+      "fc_san_chart",
+      "fc_stacked_san_chart",
       "disk_read_write_chart",
       "disk_read_write_stacked_chart",
       "disk_busy_chart",
@@ -2186,6 +2250,50 @@ function setupFullscreen() {{
         xaxis: {{ title: 'Time' }},
         yaxis: {{ title: 'Size (bytes)', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('netsize_chart'));
+      // NEW: Network Errors & Collisions chart (NETERROR)
+      const neterrorTracesByColumn = {{}};
+      const neterrorColumnsSet = new Set();
+      docs.forEach(d => {{
+        if (d.neterror) {{
+          for (const colName in d.neterror) {{
+            neterrorColumnsSet.add(colName);
+          }}
+        }}
+      }});
+      neterrorColumnsSet.forEach(colName => {{
+        neterrorTracesByColumn[colName] = {{ x: [], y: [] }};
+      }});
+      docs.forEach(d => {{
+        const t = parseTimestamp(d["@timestamp"]);
+        if (d.neterror) {{
+          for (const colName of neterrorColumnsSet) {{
+            const val = d.neterror[colName] !== undefined ? d.neterror[colName] : 0;
+            neterrorTracesByColumn[colName].x.push(t);
+            neterrorTracesByColumn[colName].y.push(val);
+          }}
+        }} else {{
+          for (const colName of neterrorColumnsSet) {{
+            neterrorTracesByColumn[colName].x.push(t);
+            neterrorTracesByColumn[colName].y.push(0);
+          }}
+        }}
+      }});
+      const neterrorTraces = [];
+      for (const [colName, arrObj] of Object.entries(neterrorTracesByColumn)) {{
+        // Legends as "XX-ierrs", "XX-oerrs", "XX-collisions"
+        neterrorTraces.push({{
+          x: arrObj.x,
+          y: arrObj.y,
+          mode: 'lines',
+          name: colName
+        }});
+      }}
+      Plotly.newPlot('net_error_chart', neterrorTraces, {{
+        title: 'Network Errors & Collisions (' + lparSelect.value + ')',
+        xaxis: {{ title: 'Time' }},
+        yaxis: {{ title: 'Count', rangemode: 'tozero' }}
+      }}).then(gd => linkCharts('net_error_chart'));
+
 
       // 15) FC read/write
       const fcTracesByColumn = {{}};
@@ -2408,6 +2516,172 @@ function setupFullscreen() {{
         xaxis: {{ title: 'Time' }},
         yaxis: {{ title: 'Transfers/s', rangemode: 'tozero' }}
       }}).then(gd => linkCharts('fcxfer_chart'));
+      
+      // NEW: Fibre Channel Read/Write - Stacked by SAN ID (KB/s)
+      (function() {{
+        const currentSanByIface = {{}};
+        const sanSeries = {{}};
+        let hasSanSamples = false;
+
+        docs.forEach(doc => {{
+          if (doc.fc_san_map) {{
+            Object.entries(doc.fc_san_map).forEach(([iface, sanId]) => {{
+              if (sanId !== undefined && sanId !== null && String(sanId).trim() !== '') {{
+                currentSanByIface[iface] = String(sanId).trim();
+              }}
+            }});
+          }}
+          const timestamp = parseTimestamp(doc["@timestamp"]);
+          const sanTotals = {{}};
+          fcColumnsSet.forEach(colName => {{
+            const dash = colName.indexOf('-');
+            let iface = colName;
+            let direction = '';
+            if (dash > 0) {{
+              iface = colName.slice(0, dash);
+              direction = colName.slice(dash + 1); // read / write
+            }}
+            const sanId = currentSanByIface[iface];
+            if (!sanId) {{
+              return;
+            }}
+            const val = (doc.fc && doc.fc[colName] !== undefined) ? doc.fc[colName] : 0;
+            const key = sanId + '-' + direction;
+            sanTotals[key] = (sanTotals[key] || 0) + (val || 0);
+          }});
+
+          if (Object.keys(sanTotals).length) {{
+            if (!hasSanSamples) {{
+              hasSanSamples = Object.values(sanTotals).some(v => Math.abs(v) > 1e-9);
+            }}
+          }}
+
+          const keys = new Set(Object.keys(sanSeries));
+          Object.keys(sanTotals).forEach(k => keys.add(k));
+          keys.forEach(key => {{
+            if (!sanSeries[key]) {{
+              sanSeries[key] = {{ x: [], y: [] }};
+            }}
+            const hasValue = Object.prototype.hasOwnProperty.call(sanTotals, key);
+            const value = hasValue ? sanTotals[key] : null;
+            sanSeries[key].x.push(timestamp);
+            sanSeries[key].y.push(value);
+          }});
+        }});
+
+        if (!hasSanSamples) {{
+          console.warn('No fc_san_map entries found; skipping Fibre Channel SAN charts');
+          return;
+        }}
+
+        const sanLineTraces = [];
+        const sanStackedTraces = [];
+        const colorPalette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'];
+        const hexToRgba = (hex, alpha) => {{
+          let normalized = hex.replace('#', '');
+          if (normalized.length === 3) {{
+            normalized = normalized.split('').map(ch => ch + ch).join('');
+          }}
+          const intVal = parseInt(normalized, 16);
+          const r = (intVal >> 16) & 255;
+          const g = (intVal >> 8) & 255;
+          const b = intVal & 255;
+          return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+        }};
+        let readIdx = 0;
+        let writeIdx = 0;
+        const sortedKeys = Object.keys(sanSeries).sort();
+        sortedKeys.forEach((key, colorIndex) => {{
+          const parts = key.split('-');
+          const san = parts[0];
+          const direction = parts[1];
+          const arrObj = sanSeries[key];
+          const lineY = arrObj.y.map(v => {{
+            if (v === null || v === undefined) {{
+              return null;
+            }}
+            const magnitude = Math.abs(v);
+            const signed = direction === 'write' ? -magnitude : magnitude;
+            return Math.abs(signed) < 1e-9 ? null : signed;
+          }});
+          const sanitizedY = lineY.map(v => (v === null ? null : (Math.abs(v) < 1e-9 ? null : v)));
+          const color = colorPalette[colorIndex % colorPalette.length];
+          const legendName = san + " " + direction;
+          const legendGroup = "san_" + key;
+
+          sanLineTraces.push({{
+            x: arrObj.x,
+            y: sanitizedY,
+            mode: 'lines',
+            name: legendName,
+            connectgaps: false,
+            line: {{ color }}
+          }});
+          const segments = [];
+          let currentX = [];
+          let currentY = [];
+          sanitizedY.forEach((val, idx) => {{
+            const xVal = arrObj.x[idx];
+            if (val === null || val === undefined) {{
+              if (currentX.length) {{
+                segments.push({{ x: currentX, y: currentY }});
+                currentX = [];
+                currentY = [];
+              }}
+            }} else {{
+              currentX.push(xVal);
+              currentY.push(val);
+            }}
+          }});
+          if (currentX.length) {{
+            segments.push({{ x: currentX, y: currentY }});
+          }}
+          if (!segments.length) {{
+            segments.push({{ x: [], y: [], empty: true }});
+          }}
+          const hasRealData = segments.some(seg => !seg.empty);
+          const isWrite = direction === 'write';
+          const stackGroupName = isWrite ? 'san_write' : 'san_read';
+          const fillMode = isWrite
+            ? (writeIdx === 0 ? 'tozeroy' : 'tonexty')
+            : (readIdx === 0 ? 'tozeroy' : 'tonexty');
+          if (hasRealData) {{
+            if (isWrite) {{
+              writeIdx++;
+            }} else {{
+              readIdx++;
+            }}
+          }}
+          segments.forEach((segment, segIdx) => {{
+            sanStackedTraces.push({{
+              x: segment.x,
+              y: segment.y,
+              mode: 'lines',
+              name: legendName,
+              stackgroup: stackGroupName,
+              fill: fillMode,
+              connectgaps: false,
+              showlegend: segIdx === 0,
+              legendgroup: legendGroup,
+              line: {{ color }},
+              fillcolor: hexToRgba(color, 0.6),
+              visible: segment.empty ? 'legendonly' : undefined
+            }});
+          }});
+        }});
+
+        Plotly.newPlot('fc_san_chart', sanLineTraces, {{
+          title: 'Fibre Channel Read/Write by SAN ID (KB/s) (' + lparSelect.value + ')',
+          xaxis: {{ title: 'Time' }},
+          yaxis: {{ title: 'KB/s' }}
+        }}).then(gd => linkCharts('fc_san_chart'));
+        Plotly.newPlot('fc_stacked_san_chart', sanStackedTraces, {{
+          title: 'Fibre Channel Read/Write - Stacked by SAN ID (KB/s) (' + lparSelect.value + ')',
+          xaxis: {{ title: 'Time' }},
+          yaxis: {{ title: 'KB/s' }}
+        }}).then(gd => linkCharts('fc_stacked_san_chart'));
+      }})();
+    
 
       // 17) DISK read/write
       const diskNamesSet = new Set();
@@ -3316,6 +3590,35 @@ def process_file(nmon_file, output_dir):
                         net_size_by_tag[tag]['en2-writesize']   = numeric_vals[2]
                         net_size_by_tag[tag]['lo0-writesize']   = numeric_vals[3]
 
+    
+    # --- NEW: NETERROR (Network Errors & Collisions) ---
+    net_error_by_tag = {}
+    neterror_header = []
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f_err:
+        for line in f_err:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            if parts[0] == 'NETERROR':
+                # Header example:
+                # NETERROR,Network Errors <Node>,en0-ierrs,lo0-ierrs,en0-oerrs,lo0-oerrs,en0-collisions,lo0-collisions
+                if len(parts) > 2 and not parts[1].startswith('T'):
+                    neterror_header = parts[2:]
+                    continue
+                # Data lines only if tag like Txxxx
+                if len(parts) > 2 and parts[1].startswith('T') and neterror_header:
+                    tag = parts[1]
+                    numeric_vals = []
+                    for x in parts[2:]:
+                        try:
+                            numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                        except:
+                            numeric_vals.append(0.0)
+                    d = {}
+                    for i, col_name in enumerate(neterror_header):
+                        d[col_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                    net_error_by_tag[tag] = d
     fcxfer_by_tag = {}
     fcxfer_in_header = []
     fcxfer_out_header = []
@@ -3359,93 +3662,123 @@ def process_file(nmon_file, output_dir):
                         fcxfer_by_tag.setdefault(tag, {})
                         fcxfer_by_tag[tag][f"{iface}-out"] = val
 
-    all_docs = build_all_docs(
-        cpu_data,
-        lpar_data,
-        proc_data,
-        file_io_data,
-        memnew_data_by_tag,
-        zzzz_map,
-        mem_data_by_tag,
-        net_data_by_tag,
-        netpacket_data_by_tag,
-        diskread_data_by_tag,
-        diskwrite_data_by_tag,
-        diskbusy_data_by_tag,
-        diskwait_data_by_tag,
-        vgread_data_by_tag,
-        vgwrite_data_by_tag,
-        vgbusy_data_by_tag,
-        vgsize_data_by_tag
-    )
+    # --- NEW: Extract fcs -> san_id mapping from BBBF lines (Port FC ID) ---
+        fc_san_map = {}
+        try:
+            with open(nmon_file, 'r', encoding='utf-8', errors='ignore') as f_bbbf:
+                for line in f_bbbf:
+                    if not line.startswith('BBBF'):
+                        continue
+                    if 'Port FC ID' not in line:
+                        continue
+                    parts_line = [x.strip() for x in line.strip().split(',')]
+                    fcs_name = None
+                    for tok in parts_line:
+                        if tok.startswith('fcs'):
+                            fcs_name = tok
+                            break
+                    # take the last token as the hex id field when possible
+                    last_field = parts_line[-1] if parts_line else ''
+                    m = re.search(r'0x([0-9a-fA-F]{2})', last_field) or re.search(r'0x([0-9a-fA-F]{2})', line)
+                    if fcs_name and m:
+                        san_id = m.group(1).lower()
+                        fc_san_map[fcs_name] = san_id
+        except Exception as _e:
+            # keep original logic intact; mapping is optional
+            fc_san_map = {}
+        all_docs = build_all_docs(
+            cpu_data,
+            lpar_data,
+            proc_data,
+            file_io_data,
+            memnew_data_by_tag,
+            zzzz_map,
+            mem_data_by_tag,
+            net_data_by_tag,
+            netpacket_data_by_tag,
+            diskread_data_by_tag,
+            diskwrite_data_by_tag,
+            diskbusy_data_by_tag,
+            diskwait_data_by_tag,
+            vgread_data_by_tag,
+            vgwrite_data_by_tag,
+            vgbusy_data_by_tag,
+            vgsize_data_by_tag
+        )
 
-    for d in all_docs:
-        tag_time = d["@timestamp"]
-        the_tag = None
-        for tkey, tval in zzzz_map.items():
-            if tval == tag_time:
-                the_tag = tkey
-                break
-        if the_tag and the_tag in net_size_by_tag:
-            d["netsize"] = net_size_by_tag[the_tag]
-        if the_tag and the_tag in fc_by_tag:
-            d["fc"] = fc_by_tag[the_tag]
-        if the_tag and the_tag in fcxfer_by_tag:
-            d["fcxfer"] = fcxfer_by_tag[the_tag]
-        if the_tag and the_tag in jfsfile_data_by_tag:
-            d["jfsfile"] = jfsfile_data_by_tag[the_tag]
-        # NEW: add FS Cache Memory Use data if available
-        if the_tag and the_tag in memuse_data_by_tag:
-            d["memuse"] = memuse_data_by_tag[the_tag]
-        # NEW: add paging data if available
-        if the_tag and the_tag in page_data_by_tag:
-            d["page"] = page_data_by_tag[the_tag]
-        # NEW: add SEA data if available
-        if the_tag and the_tag in sea_data_by_tag:
-            d["sea"] = sea_data_by_tag[the_tag]
-        # NEW: add SEA PHY data if available
-        if the_tag and the_tag in seachphy_data_by_tag:
-            d["seachphy"] = seachphy_data_by_tag[the_tag]
-        # NEW: add SEA Packets/s data if available
-        if the_tag and the_tag in seapacket_data_by_tag:
-            d["seapacket"] = seapacket_data_by_tag[the_tag]
-        # NEW: add MEM MB data if available
-        if the_tag and the_tag in mem_mb_data_by_tag:
-            d["mem_mb"] = mem_mb_data_by_tag[the_tag]
-        # NEW: add CPU Use per logical CPU data if available (fixed)
-        if the_tag and the_tag in cpu_use_data_by_tag:
-            d["cpu_use"] = { cpu: {"user": rec["user_sum"] / rec["count"], "sys": rec["sys_sum"] / rec["count"]} 
-                             for cpu, rec in cpu_use_data_by_tag[the_tag].items() }
-    top_docs = build_top_docs(top_data_by_tag, zzzz_map)
+        for d in all_docs:
+            tag_time = d["@timestamp"]
+            the_tag = None
+            for tkey, tval in zzzz_map.items():
+                if tval == tag_time:
+                    the_tag = tkey
+                    break
+            # NEW: add FC SAN map if available
+            if fc_san_map:
+                d["fc_san_map"] = fc_san_map
+            if the_tag and the_tag in net_size_by_tag:
+                d["netsize"] = net_size_by_tag[the_tag]
+            if the_tag and the_tag in net_error_by_tag:
+                d["neterror"] = net_error_by_tag[the_tag]
 
-    # NEW: Create LPM docs
-    lpm_docs = []
-    for item in lpm_data:
-        lpm_docs.append({
-            '@timestamp': item['timestamp'],
-            'state': item['state'],
-            'old_serial': item['old_serial'],
-            'current_serial': item['current_serial']
-        })
+            if the_tag and the_tag in fc_by_tag:
+                d["fc"] = fc_by_tag[the_tag]
+            if the_tag and the_tag in fcxfer_by_tag:
+                d["fcxfer"] = fcxfer_by_tag[the_tag]
+            if the_tag and the_tag in jfsfile_data_by_tag:
+                d["jfsfile"] = jfsfile_data_by_tag[the_tag]
+            # NEW: add FS Cache Memory Use data if available
+            if the_tag and the_tag in memuse_data_by_tag:
+                d["memuse"] = memuse_data_by_tag[the_tag]
+            # NEW: add paging data if available
+            if the_tag and the_tag in page_data_by_tag:
+                d["page"] = page_data_by_tag[the_tag]
+            # NEW: add SEA data if available
+            if the_tag and the_tag in sea_data_by_tag:
+                d["sea"] = sea_data_by_tag[the_tag]
+            # NEW: add SEA PHY data if available
+            if the_tag and the_tag in seachphy_data_by_tag:
+                d["seachphy"] = seachphy_data_by_tag[the_tag]
+            # NEW: add SEA Packets/s data if available
+            if the_tag and the_tag in seapacket_data_by_tag:
+                d["seapacket"] = seapacket_data_by_tag[the_tag]
+            # NEW: add MEM MB data if available
+            if the_tag and the_tag in mem_mb_data_by_tag:
+                d["mem_mb"] = mem_mb_data_by_tag[the_tag]
+            # NEW: add CPU Use per logical CPU data if available (fixed)
+            if the_tag and the_tag in cpu_use_data_by_tag:
+                d["cpu_use"] = { cpu: {"user": rec["user_sum"] / rec["count"], "sys": rec["sys_sum"] / rec["count"]} 
+                                 for cpu, rec in cpu_use_data_by_tag[the_tag].items() }
+        top_docs = build_top_docs(top_data_by_tag, zzzz_map)
 
-    base_name = os.path.splitext(os.path.basename(nmon_file))[0]
-    out_all_dir = os.path.join(output_dir, "all")
-    os.makedirs(out_all_dir, exist_ok=True)
-    all_path = os.path.join(out_all_dir, f"{base_name}_all.json")
-    write_ndjson(all_docs, all_path)
-    print(f"Wrote {len(all_docs)} docs => {all_path}")
+        # NEW: Create LPM docs
+        lpm_docs = []
+        for item in lpm_data:
+            lpm_docs.append({
+                '@timestamp': item['timestamp'],
+                'state': item['state'],
+                'old_serial': item['old_serial'],
+                'current_serial': item['current_serial']
+            })
 
-    out_top_dir = os.path.join(output_dir, "top")
-    os.makedirs(out_top_dir, exist_ok=True)
-    top_path = os.path.join(out_top_dir, f"{base_name}_top.json")
-    write_ndjson(top_docs, top_path)
-    print(f"Wrote {len(top_docs)} top docs => {top_path}")
+        base_name = os.path.splitext(os.path.basename(nmon_file))[0]
+        out_all_dir = os.path.join(output_dir, "all")
+        os.makedirs(out_all_dir, exist_ok=True)
+        all_path = os.path.join(out_all_dir, f"{base_name}_all.json")
+        write_ndjson(all_docs, all_path)
+        print(f"Wrote {len(all_docs)} docs => {all_path}")
 
-    return (node, frame, all_docs, top_docs, lpm_docs)
+        out_top_dir = os.path.join(output_dir, "top")
+        os.makedirs(out_top_dir, exist_ok=True)
+        top_path = os.path.join(out_top_dir, f"{base_name}_top.json")
+        write_ndjson(top_docs, top_path)
+        print(f"Wrote {len(top_docs)} top docs => {top_path}")
 
-################################################################################
-# 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA, SEA Stacked, SEA Packets/s, MEM MB, Top PID charts)
-################################################################################
+        return (node, frame, all_docs, top_docs, lpm_docs)
+
+    ################################################################################
+    # 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA, SEA Stacked, SEA Packets/s, MEM MB, Top PID charts)
+    ################################################################################
 
 def main():
     parser = argparse.ArgumentParser(
