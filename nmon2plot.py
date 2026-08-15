@@ -12,12 +12,6 @@ import argparse
 # 1. Helper Functions
 ################################################################################
 
-_DATE_RE = re.compile(r'^\d{2}-[A-Z]{3}-\d{4}$')
-_BBBR_SEQ_RE = re.compile(r'0\d{2}')
-_FC_ID_RE = re.compile(r'0x([0-9a-fA-F]{2})')
-_JSON_SEP = (',', ':')
-
-
 def parse_date_time(date_str, time_str):
     """Combine date and time (e.g., '07-JAN-2025 00:01:54')."""
     return f"{date_str} {time_str}"
@@ -32,31 +26,6 @@ def read_in_chunks(file_object, chunk_size=10000):
             chunk = []
     if chunk:
         yield chunk
-
-
-def _to_float(x):
-    try:
-        x = x.strip()
-        return float(x) if x else 0.0
-    except Exception:
-        return 0.0
-
-
-def _float_list(parts, start=2):
-    out = []
-    for i in range(start, len(parts)):
-        out.append(_to_float(parts[i]))
-    return out
-
-
-def _mapped(header, parts, start=2):
-    vals = _float_list(parts, start)
-    n = len(vals)
-    d = {}
-    for i, name in enumerate(header):
-        d[name] = vals[i] if i < n else 0.0
-    return d
-
 
 ################################################################################
 # 2. parse_nmon_file (including TOP lines)
@@ -148,18 +117,6 @@ def parse_nmon_file(nmon_file):
     seachphy_header = []
     seachphy_data_by_tag = {}
 
-    # Fibre Channel / NETSIZE / NETERROR / SAN map (parsed in the same pass)
-    fc_by_tag = {}
-    fc_read_header = []
-    fc_write_header = []
-    net_size_by_tag = {}
-    net_error_by_tag = {}
-    neterror_header = []
-    fcxfer_by_tag = {}
-    fcxfer_in_header = []
-    fcxfer_out_header = []
-    fc_san_map = {}
-    frame = None
 
     # --- NEW: For CPU use (per logical CPU) ---
     # This new branch parses lines like "CPU01,Txxxx,User%,Sys%,Wait%,Idle%"
@@ -171,7 +128,7 @@ def parse_nmon_file(nmon_file):
     file_io_columns = []
 
     with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f:
-        for chunk_lines in (f,):
+        for chunk_lines in read_in_chunks(f):
             for line in chunk_lines:
                 line = line.strip()
                 if not line:
@@ -183,7 +140,7 @@ def parse_nmon_file(nmon_file):
                     tag = parts[1]
                     time_str = parts[2]
                     date_str = parts[3].strip()
-                    if not _DATE_RE.match(date_str.upper()):
+                    if not re.match(r'^\d{2}-[A-Z]{3}-\d{4}$', date_str.upper()):
                         if fallback_date:
                             date_str = fallback_date
                     zzzz_map[tag] = parse_date_time(date_str, time_str)
@@ -202,7 +159,7 @@ def parse_nmon_file(nmon_file):
                         pass
                     continue
                 # NEW: CPU use per logical core from lines like "CPU01,Txxxx,..."
-                if key.startswith('CPU') and key[3:].isdigit() and len(parts) > 1 and parts[1].startswith('T'):
+                if re.match(r'^CPU\d+$', key) and len(parts) > 1 and parts[1].startswith('T'):
                     try:
                         cpu_number = key[len("CPU"):]  # e.g., "01"
                         user_val = float(parts[2]) if parts[2].strip() else 0.0
@@ -412,8 +369,6 @@ def parse_nmon_file(nmon_file):
                         node = value
                     elif somekey == 'date':
                         fallback_date = value
-                    elif somekey == 'SerialNumber':
-                        frame = value
                 # -------------------------
                 # DISK READ
                 # -------------------------
@@ -600,7 +555,7 @@ def parse_nmon_file(nmon_file):
                         bbbr_header = parts
                         bbbr_header_parsed = True
                         continue
-                    if bbbr_header_parsed and _BBBR_SEQ_RE.match(parts[1]):
+                    if bbbr_header_parsed and re.match(r'0\d{2}', parts[1]):
                         try:
                             # Find indices from header
                             when_idx = bbbr_header.index('when')
@@ -742,90 +697,6 @@ def parse_nmon_file(nmon_file):
                             d[col_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
                         seapacket_data_by_tag[tag] = d
                         continue
-
-                # FCREAD / FCWRITE
-                if key == 'FCREAD' and len(parts) > 2:
-                    if not parts[1].startswith('T'):
-                        fc_read_header = parts[2:]
-                        continue
-                    tag = parts[1]
-                    numeric_vals = _float_list(parts, 2)
-                    if fc_read_header:
-                        dest = fc_by_tag.setdefault(tag, {})
-                        for i, iface in enumerate(fc_read_header):
-                            dest[f"{iface}-read"] = numeric_vals[i] if i < len(numeric_vals) else 0.0
-                    continue
-                if key == 'FCWRITE' and len(parts) > 2:
-                    if not parts[1].startswith('T'):
-                        fc_write_header = parts[2:]
-                        continue
-                    tag = parts[1]
-                    numeric_vals = _float_list(parts, 2)
-                    if fc_write_header:
-                        dest = fc_by_tag.setdefault(tag, {})
-                        for i, iface in enumerate(fc_write_header):
-                            dest[f"{iface}-write"] = numeric_vals[i] if i < len(numeric_vals) else 0.0
-                    continue
-
-                # NETSIZE (keep original hardcoded interface labels)
-                if key == 'NETSIZE' and len(parts) > 2 and parts[1].startswith('T'):
-                    tag = parts[1]
-                    numeric_vals = _float_list(parts, 2)
-                    if len(numeric_vals) >= 4:
-                        net_size_by_tag[tag] = {
-                            'en2-readsize': numeric_vals[0],
-                            'lo0-readsize': numeric_vals[1],
-                            'en2-writesize': numeric_vals[2],
-                            'lo0-writesize': numeric_vals[3],
-                        }
-                    continue
-
-                # NETERROR
-                if key == 'NETERROR' and len(parts) > 2:
-                    if not parts[1].startswith('T'):
-                        neterror_header = parts[2:]
-                        continue
-                    if neterror_header:
-                        net_error_by_tag[parts[1]] = _mapped(neterror_header, parts, 2)
-                    continue
-
-                # FCXFERIN / FCXFEROUT
-                if key == 'FCXFERIN' and len(parts) > 2:
-                    if not parts[1].startswith('T'):
-                        fcxfer_in_header = parts[2:]
-                        continue
-                    tag = parts[1]
-                    numeric_vals = _float_list(parts, 2)
-                    if fcxfer_in_header:
-                        dest = fcxfer_by_tag.setdefault(tag, {})
-                        for i, iface in enumerate(fcxfer_in_header):
-                            dest[f"{iface}-in"] = numeric_vals[i] if i < len(numeric_vals) else 0.0
-                    continue
-                if key == 'FCXFEROUT' and len(parts) > 2:
-                    if not parts[1].startswith('T'):
-                        fcxfer_out_header = parts[2:]
-                        continue
-                    tag = parts[1]
-                    numeric_vals = _float_list(parts, 2)
-                    if fcxfer_out_header:
-                        dest = fcxfer_by_tag.setdefault(tag, {})
-                        for i, iface in enumerate(fcxfer_out_header):
-                            dest[f"{iface}-out"] = numeric_vals[i] if i < len(numeric_vals) else 0.0
-                    continue
-
-                # BBBF => fcs -> SAN id (Port FC ID)
-                if key == 'BBBF' and 'Port FC ID' in line:
-                    parts_line = [x.strip() for x in parts]
-                    fcs_name = None
-                    for tok in parts_line:
-                        if tok.startswith('fcs'):
-                            fcs_name = tok
-                            break
-                    last_field = parts_line[-1] if parts_line else ''
-                    m = _FC_ID_RE.search(last_field) or _FC_ID_RE.search(line)
-                    if fcs_name and m:
-                        fc_san_map[fcs_name] = m.group(1).lower()
-                    continue
     if not node:
         node = base_name
     # Return all parsed data including the new mem_mb_data_by_tag, paging data, sea_data_by_tag, and seapacket_data_by_tag,
@@ -858,13 +729,7 @@ def parse_nmon_file(nmon_file):
         seachphy_data_by_tag,      # NEW: SEA PHY Errors & Drops data
         seapacket_data_by_tag, # NEW: SEA Packets/s data
         cpu_use_data_by_tag,   # NEW: CPU Use per logical CPU data
-        lpm_data,
-        fc_by_tag,
-        net_size_by_tag,
-        net_error_by_tag,
-        fcxfer_by_tag,
-        fc_san_map,
-        frame,
+        lpm_data
     )
 
 ################################################################################
@@ -877,10 +742,8 @@ def build_all_docs(cpu_data_by_tag, lpar_data_by_tag, proc_data_by_tag,
                    diskread_data_by_tag, diskwrite_data_by_tag,
                    diskbusy_data_by_tag, diskwait_data_by_tag,
                    vgread_data_by_tag, vgwrite_data_by_tag,
-                   vgbusy_data_by_tag, vgsize_data_by_tag,
-                   extra_by_tag=None, fc_san_map=None):
+                   vgbusy_data_by_tag, vgsize_data_by_tag):
     docs = []
-    extra_by_tag = extra_by_tag or {}
     all_tags = (
         set(cpu_data_by_tag.keys())
         | set(lpar_data_by_tag.keys())
@@ -900,8 +763,6 @@ def build_all_docs(cpu_data_by_tag, lpar_data_by_tag, proc_data_by_tag,
         | set(vgsize_data_by_tag.keys())
         | set(zzzz_map.keys())
     )
-    for extra_map in extra_by_tag.values():
-        all_tags.update(extra_map.keys())
 
     for tag in sorted(all_tags):
         dt = zzzz_map.get(tag)
@@ -946,16 +807,8 @@ def build_all_docs(cpu_data_by_tag, lpar_data_by_tag, proc_data_by_tag,
         if tag in vgsize_data_by_tag:
             doc["vgsize"] = vgsize_data_by_tag[tag]
 
-        for field_name, data_map in extra_by_tag.items():
-            if tag in data_map:
-                doc[field_name] = data_map[tag]
-
         if len(doc) > 1:
             docs.append(doc)
-
-    # SAN mapping is static per file; keep it once so HTML/JSON stay small.
-    if fc_san_map and docs:
-        docs[0]["fc_san_map"] = fc_san_map
 
     return docs
 
@@ -974,11 +827,9 @@ def build_top_docs(top_data_by_tag, zzzz_map):
 def write_ndjson(docs, filepath):
     if not docs:
         return
-    dumps = json.dumps
     with open(filepath, "w", encoding="utf-8") as f:
         for doc in docs:
-            f.write(dumps(doc, separators=_JSON_SEP, ensure_ascii=False))
-            f.write("\n")
+            f.write(json.dumps(doc) + "\n")
 
 ################################################################################
 # 4. Generate HTML with 16 charts (existing) + 5 new DISK/VG charts (no VG SIZE)
@@ -1030,14 +881,10 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
              is added just before the TOP Commands by %CPU chart.
       (14) NEW: A new point chart for LPM Migration Events is added after the JFS Percent Full chart.
     """
-    lpar_names = []
-    seen_names = set()
-    for name in list(frame_map.keys()) + list(lpar_data_map.keys()):
-        if name not in seen_names:
-            seen_names.add(name)
-            lpar_names.append(name)
-    embedded_frames = json.dumps(frame_map, separators=_JSON_SEP)
-    embedded_index = json.dumps({name: i for i, name in enumerate(lpar_names)}, separators=_JSON_SEP)
+    embedded_all = json.dumps(lpar_data_map)
+    embedded_top = json.dumps(top_data_map)
+    embedded_lpm = json.dumps(lpm_data_map)
+    embedded_frames = json.dumps(frame_map)
 
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -1083,7 +930,6 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
       height: 400px; /* fixed chart height */
       border-radius: 2%; 
       overflow: hidden;
-      contain: layout style;
     }}
     
     .chart-container > div {{
@@ -1155,24 +1001,10 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
   .chart-container.hidden {{
     display: none !important;
   }}
-  #nmonLoading {{
-    position: fixed;
-    bottom: 16px;
-    right: 16px;
-    z-index: 5000;
-    background: rgba(13,27,42,0.92);
-    color: #fff;
-    padding: 8px 14px;
-    border-radius: 8px;
-    font-size: 13px;
-    display: none;
-    pointer-events: none;
-  }}
   </style>
   
 </head>
 <body>
-  <div id="nmonLoading">Rendering visible charts…</div>
   <div class="toggle-container">
     <div class="toggle" id="compareToggle">
       <div class="slider"></div>
@@ -1287,45 +1119,11 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
     <div class="chart-container"><div id="sea_phy_error_chart"></div></div>
     <div class="chart-container"><div id="sea_phy_drop_chart"></div></div>
   </div>
-  __NMON_DATA_SCRIPTS__
   <script>
+    const lparDataMap = {embedded_all};
+    const topDataMap  = {embedded_top};
+    const lpmDataMap  = {embedded_lpm};
     const frameMap    = {embedded_frames};
-    const lparIndex   = {embedded_index};
-    const _jsonCache = {{ all: {{}}, top: {{}}, lpm: {{}} }};
-    function loadNmonJson(kind, lparName) {{
-      const cache = _jsonCache[kind];
-      if (Object.prototype.hasOwnProperty.call(cache, lparName)) {{
-        return cache[lparName];
-      }}
-      const idx = lparIndex[lparName];
-      let data = [];
-      if (idx !== undefined) {{
-        const el = document.getElementById('nmon-' + kind + '-' + idx);
-        if (el && el.textContent) {{
-          data = JSON.parse(el.textContent);
-        }}
-      }}
-      cache[lparName] = data;
-      return data;
-    }}
-    const lparDataMap = new Proxy({{}}, {{
-      get(_t, prop) {{
-        if (typeof prop !== 'string' || prop === 'then') return undefined;
-        return loadNmonJson('all', prop);
-      }}
-    }});
-    const topDataMap = new Proxy({{}}, {{
-      get(_t, prop) {{
-        if (typeof prop !== 'string' || prop === 'then') return undefined;
-        return loadNmonJson('top', prop);
-      }}
-    }});
-    const lpmDataMap = new Proxy({{}}, {{
-      get(_t, prop) {{
-        if (typeof prop !== 'string' || prop === 'then') return undefined;
-        return loadNmonJson('lpm', prop);
-      }}
-    }});
 
     function traceHasOnlyZeroValues(trace) {{
       if (!trace) {{
@@ -1370,199 +1168,20 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
     }}
 
     const originalPlotlyNewPlot = Plotly.newPlot;
-    const originalPlotlyRelayout = Plotly.relayout;
-    const PLOT_CONFIG = {{displayModeBar: true, responsive: false, displaylogo: false}};
-    const plotJobs = new Map();
-    const plottedIds = new Set();
-    let sharedXRange = null;
-    let flushScheduled = false;
-    let loadingEl = null;
-    window._nmonForceSyncPlot = false;
-
-    function hideZeroTraces(dataArg) {{
-      if (!Array.isArray(dataArg)) return;
-      dataArg.forEach(trace => {{
-        if (!trace || trace.visible !== undefined) return;
-        if (traceHasOnlyZeroValues(trace)) {{
-          trace.visible = 'legendonly';
-        }}
-      }});
-    }}
-
-    function maybeWebGL(dataArg) {{
-      if (!Array.isArray(dataArg)) return;
-      dataArg.forEach(trace => {{
-        if (!trace || trace.stackgroup || trace.type === 'bar' || trace.type === 'scattergl') return;
-        const n = Array.isArray(trace.y) ? trace.y.length : 0;
-        if (n >= 600 && (trace.mode === 'lines' || trace.mode === 'lines+markers' || !trace.mode)) {{
-          trace.type = 'scattergl';
-        }}
-      }});
-    }}
-
-    function getPlotEl(idOrEl) {{
-      return (typeof idOrEl === 'string') ? document.getElementById(idOrEl) : idOrEl;
-    }}
-
-    function isNearViewport(el, margin) {{
-      if (!el) return false;
-      const m = (margin == null) ? 280 : margin;
-      const rect = el.getBoundingClientRect();
-      return rect.bottom >= -m && rect.top <= (window.innerHeight + m);
-    }}
-
-    function applySharedRange(layout) {{
-      if (!layout || !sharedXRange || !layout.xaxis) return layout;
-      const title = layout.xaxis.title;
-      const isTime = layout.xaxis.range || title === 'Time' || (title && title.text === 'Time');
-      if (isTime) {{
-        layout.xaxis = Object.assign({{}}, layout.xaxis, {{ range: sharedXRange, autorange: false }});
-      }}
-      return layout;
-    }}
-
-    function setLoading(on) {{
-      if (!loadingEl) loadingEl = document.getElementById('nmonLoading');
-      if (loadingEl) loadingEl.style.display = on ? 'block' : 'none';
-    }}
-
-    function mergePlotArgs(args) {{
-      hideZeroTraces(args[1]);
-      maybeWebGL(args[1]);
-      if (args.length > 2) args[2] = applySharedRange(args[2]);
-      if (args.length < 4) {{
-        args.push(PLOT_CONFIG);
-      }} else if (args[3]) {{
-        args[3] = Object.assign({{}}, PLOT_CONFIG, args[3]);
-      }}
-      return args;
-    }}
-
-    function runPlot(id, job) {{
-      const args = mergePlotArgs(job.args);
-      return originalPlotlyNewPlot.apply(Plotly, args).then(gd => {{
-        plottedIds.add(id);
-        job.resolve(gd);
-        return gd;
-      }}).catch(err => {{
-        job.reject(err);
-      }});
-    }}
-
-    function scheduleFlush() {{
-      if (flushScheduled) return;
-      flushScheduled = true;
-      requestAnimationFrame(flushPlotQueue);
-    }}
-
-    function flushPlotQueue() {{
-      flushScheduled = false;
-      if (!plotJobs.size) {{
-        setLoading(false);
-        return;
-      }}
-      let chosenId = null;
-      let chosenJob = null;
-      for (const [id, job] of plotJobs) {{
-        if (isNearViewport(job.el)) {{
-          chosenId = id;
-          chosenJob = job;
-          break;
-        }}
-      }}
-      if (!chosenJob) {{
-        let visiblePlotted = 0;
-        plottedIds.forEach(id => {{
-          if (isNearViewport(document.getElementById(id))) visiblePlotted++;
-        }});
-        if (visiblePlotted === 0) {{
-          const first = plotJobs.entries().next().value;
-          if (first) {{
-            chosenId = first[0];
-            chosenJob = first[1];
-          }}
-        }}
-      }}
-      if (!chosenJob) {{
-        setLoading(false);
-        return;
-      }}
-      setLoading(true);
-      plotJobs.delete(chosenId);
-      runPlot(chosenId, chosenJob).then(() => {{
-        if (plotJobs.size) scheduleFlush();
-        else setLoading(false);
-      }});
-    }}
-
-    function plotNow(id) {{
-      const job = plotJobs.get(id);
-      if (!job) {{
-        const el = document.getElementById(id);
-        if (el && plottedIds.has(id)) Plotly.Plots.resize(el);
-        return Promise.resolve();
-      }}
-      plotJobs.delete(id);
-      return runPlot(id, job);
-    }}
-
-    function resetPlotState() {{
-      plotJobs.forEach(job => {{
-        try {{ job.resolve(null); }} catch (e) {{}}
-      }});
-      plotJobs.clear();
-      if (window._nmonForceSyncPlot) return;
-      plottedIds.forEach(id => {{
-        const el = document.getElementById(id);
-        if (el) {{
-          try {{ Plotly.purge(el); }} catch (e) {{}}
-          el._nmonLinked = false;
-        }}
-      }});
-      plottedIds.clear();
-    }}
-
     Plotly.newPlot = function() {{
-      const el = getPlotEl(arguments[0]);
-      const id = el && el.id ? el.id : String(arguments[0]);
-      const args = Array.prototype.slice.call(arguments);
-      plottedIds.delete(id);
-      if (window._nmonForceSyncPlot || (typeof id === 'string' && id.slice(-2) === '_b')) {{
-        return new Promise((resolve, reject) => {{
-          runPlot(id, {{ args: args, resolve: resolve, reject: reject }});
+      const dataArg = arguments.length > 1 ? arguments[1] : null;
+      if (Array.isArray(dataArg)) {{
+        dataArg.forEach(trace => {{
+          if (!trace || trace.visible !== undefined) {{
+            return;
+          }}
+          if (traceHasOnlyZeroValues(trace)) {{
+            trace.visible = 'legendonly';
+          }}
         }});
       }}
-      return new Promise((resolve, reject) => {{
-        plotJobs.set(id, {{ args: args, resolve: resolve, reject: reject, el: el }});
-        scheduleFlush();
-      }});
+      return originalPlotlyNewPlot.apply(Plotly, arguments);
     }};
-
-    Plotly.relayout = function(idOrEl, update) {{
-      const el = getPlotEl(idOrEl);
-      const id = el && el.id;
-      if (id && !plottedIds.has(id)) {{
-        return Promise.resolve();
-      }}
-      try {{
-        return originalPlotlyRelayout.apply(Plotly, arguments);
-      }} catch (e) {{
-        return Promise.resolve();
-      }}
-    }};
-
-    const plotObserver = new IntersectionObserver((entries) => {{
-      let needed = false;
-      entries.forEach(en => {{
-        if (!en.isIntersecting) return;
-        const id = en.target.id;
-        if (plotJobs.has(id)) needed = true;
-        else if (plottedIds.has(id) && sharedXRange) {{
-          originalPlotlyRelayout(id, {{ 'xaxis.range': sharedXRange }});
-        }}
-      }});
-      if (needed) scheduleFlush();
-    }}, {{ rootMargin: '280px' }});
 
     // --- MODIFICATION EXPLICITE : PARTIE 1 ---
     // Ce tableau 'chartIds' est la liste principale de tous les graphiques.
@@ -1619,11 +1238,7 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
       "sea_phy_error_chart",
       "sea_phy_drop_chart",
     ];
-    chartIds.forEach(id => {{
-      const el = document.getElementById(id);
-      if (el) plotObserver.observe(el);
-    }});
-    // ========== Dark-mode relay function ==========
+    // ========== Darkâ€‘mode relay function ==========
     function applyDarkModeToAllCharts(isDark) {{
       const layoutUpdates = isDark
         ? {{
@@ -1640,8 +1255,8 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
             'xaxis.color': null,
             'yaxis.color': null
           }};
-      plottedIds.forEach(id => {{
-        originalPlotlyRelayout(id, layoutUpdates);
+      chartIds.forEach(id => {{
+        Plotly.relayout(id, layoutUpdates);
       }});
     }}
 
@@ -1671,19 +1286,14 @@ function setupFullscreen() {{
         // hide siblings, expand this one
         containers.forEach(c => {{ if (c !== container) c.classList.add('hidden'); }});
         container.classList.add('fullscreen');
-        const inner = container.firstElementChild;
-        if (inner && inner.id) plotNow(inner.id);
-        if (inner) Plotly.Plots.resize(inner);
+        Plotly.Plots.resize(container.firstElementChild);
       }} 
       else {{
         // restore layout
         containers.forEach(c => c.classList.remove('hidden','fullscreen'));
-        plottedIds.forEach(id => {{
-          const el = document.getElementById(id);
-          if (el) Plotly.Plots.resize(el);
-        }});
+        chartIds.forEach(id => Plotly.Plots.resize(document.getElementById(id)));
          // restore scroll so this chart stays in view
-        window.scrollTo(0, lastScrollTop);
++        window.scrollTo(0, lastScrollTop);
       }}
     }});
   }});
@@ -1697,44 +1307,34 @@ function setupFullscreen() {{
     // Variable pour éviter les boucles d'événements infinies
     var relayoutLock = false;
 
-    // Fonction pour lier les axes X des graphiques visibles
+    // Fonction pour lier les axes X de tous les graphiques
     function linkCharts(chartId) {{
       const chartDiv = document.getElementById(chartId);
-      if (!chartDiv || typeof chartDiv.on !== 'function') return;
-      if (chartDiv._nmonLinked) return;
-      chartDiv._nmonLinked = true;
+      if (!chartDiv) return;
       chartDiv.on('plotly_relayout', (eventData) => {{
         if (relayoutLock) return;
+        // Si l'événement contient des changements sur l'axe X, on les propage
         const update = {{}};
         if (eventData['xaxis.range[0]'] !== undefined && eventData['xaxis.range[1]'] !== undefined) {{
           update['xaxis.range'] = [ eventData['xaxis.range[0]'], eventData['xaxis.range[1]'] ];
-          sharedXRange = update['xaxis.range'];
         }}
         if (eventData['xaxis.autorange'] === true) {{
           update['xaxis.autorange'] = true;
-          sharedXRange = null;
         }}
-        if (Object.keys(update).length === 0) return;
-        relayoutLock = true;
-        const tasks = [];
-        plottedIds.forEach(otherId => {{
-          if (otherId === chartId) return;
-          const otherEl = document.getElementById(otherId);
-          if (!isNearViewport(otherEl, 800)) return;
-          tasks.push(originalPlotlyRelayout(otherId, update));
-        }});
-        Promise.all(tasks).then(() => {{ relayoutLock = false; }}).catch(() => {{ relayoutLock = false; }});
+        if (Object.keys(update).length > 0) {{
+          relayoutLock = true;
+          chartIds.forEach(otherId => {{
+            if (otherId !== chartId) {{
+              Plotly.relayout(otherId, update);
+            }}
+          }});
+          setTimeout(() => {{ relayoutLock = false; }}, 50);
+        }}
       }});
     }}
     
-    const tsCache = new Map();
     function parseTimestamp(ts) {{
-      let v = tsCache.get(ts);
-      if (v === undefined) {{
-        v = new Date(ts);
-        tsCache.set(ts, v);
-      }}
-      return v;
+      return new Date(ts);
     }}
 
     // FRAME & LPAR dropdowns
@@ -1849,16 +1449,13 @@ function setupFullscreen() {{
 
     function renderCharts() {{
       updateChartLayout();
-      resetPlotState();
       const docs = getFilteredDocs();
       if (!docs.length) {{
-        setLoading(false);
         chartIds.forEach(id => {{
           document.getElementById(id).innerHTML = "<p>No data</p>";
         }});
         return;
       }}
-      setLoading(true);
       const times = docs.map(d => parseTimestamp(d["@timestamp"]));
       const xRange = [times[0], times[times.length - 1]];
       
@@ -3749,13 +3346,7 @@ if (!lpmDocs.length) {{
       renderCharts();
     }}
 
-    document.getElementById("chartsPerRow").addEventListener("change", () => {{
-      updateChartLayout();
-      plottedIds.forEach(id => {{
-        const el = document.getElementById(id);
-        if (el) Plotly.Plots.resize(el);
-      }});
-    }});
+    document.getElementById("chartsPerRow").addEventListener("change", renderCharts);
     lparSelect.addEventListener("change", renderCharts);
     frameSelect.addEventListener("change", () => {{ populateLpars(); renderCharts(); }});
 
@@ -3823,15 +3414,11 @@ document.addEventListener('DOMContentLoaded', () => {{
 
   /* clone full figure from A to B */
   function copyFigure(idSuffix){{
-      const src=document.getElementById(idSuffix.replace('_b',''));
-      if(!src || !src.data) return;
-      const fig=Plotly.Plots.graphJson(src);
+      const fig=Plotly.Plots.graphJson(document.getElementById(idSuffix.replace('_b','')));
       Plotly.newPlot(idSuffix, fig.data, fig.layout, {{displayModeBar:true, responsive:true}});
   }}
 
   function renderChartsB(){{
-      window._nmonForceSyncPlot = true;
-      try {{
       const lpar=selB.value;
       const start=document.getElementById('start_date_b').value;
       const end=document.getElementById('end_date_b').value;
@@ -3853,9 +3440,6 @@ document.addEventListener('DOMContentLoaded', () => {{
 
       /* ensure modebars present */
       chartIds.forEach(id=>copyFigure(id+'_b'));
-      }} finally {{
-        window._nmonForceSyncPlot = false;
-      }}
   }}
 
   /* toggle comparison */
@@ -3885,33 +3469,25 @@ document.addEventListener('DOMContentLoaded', () => {{
 </body>
 </html>"""
 
-    marker = "__NMON_DATA_SCRIPTS__"
-    if marker not in html_content:
-        raise RuntimeError("HTML template is missing the data placeholder")
-    pre, post = html_content.split(marker, 1)
-
-    def _write_json_script(fh, element_id, obj):
-        payload = json.dumps(obj, separators=_JSON_SEP, ensure_ascii=False)
-        if '<' in payload:
-            payload = payload.replace('<', r'\u003c')
-        fh.write(f'<script type="application/json" id="{element_id}">')
-        fh.write(payload)
-        fh.write('</script>\n')
-
     with open(output_html, "w", encoding="utf-8") as f:
-        f.write(pre)
-        for i, name in enumerate(lpar_names):
-            _write_json_script(f, f'nmon-all-{i}', lpar_data_map.get(name, []))
-            _write_json_script(f, f'nmon-top-{i}', top_data_map.get(name, []))
-            _write_json_script(f, f'nmon-lpm-{i}', lpm_data_map.get(name, []))
-        f.write(post)
+        f.write(html_content)
     print("Wrote HTML (16 existing charts + DISK/VG charts, plus new Paging, FS Cache, unstacked SEA, stacked SEA, SEA Packets/s, MEM MB, Top PID, CPU Use, Bubble, InterProcess Comms, and LPM charts) to:", output_html)
 
 ################################################################################
 # 5. process_file => parse => NDJSON => return
 ################################################################################
 
-def process_file(nmon_file, output_dir, skip_ndjson=False):
+def process_file(nmon_file, output_dir):
+    # Determine frame (SerialNumber) for this nmon file
+    frame = None
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as meta_f:
+        for line in meta_f:
+            if line.startswith('AAA,SerialNumber'):
+                parts = line.strip().split(',')
+                if len(parts) > 2:
+                    frame = parts[2].strip()
+                break
+
     (
         cpu_data,
         lpar_data,
@@ -3922,7 +3498,7 @@ def process_file(nmon_file, output_dir, skip_ndjson=False):
         node,
         memnew_data_by_tag,
         mem_data_by_tag,
-        mem_mb_data_by_tag,
+        mem_mb_data_by_tag,  # NEW: MEM MB data
         net_data_by_tag,
         netpacket_data_by_tag,
         diskread_data_by_tag,
@@ -3934,76 +3510,257 @@ def process_file(nmon_file, output_dir, skip_ndjson=False):
         vgbusy_data_by_tag,
         vgsize_data_by_tag,
         jfsfile_data_by_tag,
-        memuse_data_by_tag,
-        page_data_by_tag,
-        sea_data_by_tag,
-        seachphy_data_by_tag,
-        seapacket_data_by_tag,
-        cpu_use_data_by_tag,
-        lpm_data,
-        fc_by_tag,
-        net_size_by_tag,
-        net_error_by_tag,
-        fcxfer_by_tag,
-        fc_san_map,
-        frame,
+        memuse_data_by_tag,   # NEW: FS Cache Memory Use data
+        page_data_by_tag,     # NEW: Paging data
+        sea_data_by_tag,      # NEW: SEA data
+        seachphy_data_by_tag,      # NEW: SEA PHY Errors & Drops data
+        seapacket_data_by_tag, # NEW: SEA Packets/s data
+        cpu_use_data_by_tag,   # NEW: CPU Use per logical CPU data
+        lpm_data
     ) = parse_nmon_file(nmon_file)
 
-    cpu_use_avg_by_tag = {}
-    for tag, cpus in cpu_use_data_by_tag.items():
-        cpu_use_avg_by_tag[tag] = {
-            cpu: {"user": rec["user_sum"] / rec["count"], "sys": rec["sys_sum"] / rec["count"]}
-            for cpu, rec in cpus.items()
-            if rec.get("count")
-        }
+    # --- Already-existing logic for "fc" read/write and "netsize" --- 
+    # We do NOT remove or change it. We only add the new "FCXFERIN"/"FCXFEROUT" pass.
 
-    all_docs = build_all_docs(
-        cpu_data,
-        lpar_data,
-        proc_data,
-        file_io_data,
-        memnew_data_by_tag,
-        zzzz_map,
-        mem_data_by_tag,
-        net_data_by_tag,
-        netpacket_data_by_tag,
-        diskread_data_by_tag,
-        diskwrite_data_by_tag,
-        diskbusy_data_by_tag,
-        diskwait_data_by_tag,
-        vgread_data_by_tag,
-        vgwrite_data_by_tag,
-        vgbusy_data_by_tag,
-        vgsize_data_by_tag,
-        extra_by_tag={
-            "netsize": net_size_by_tag,
-            "neterror": net_error_by_tag,
-            "fc": fc_by_tag,
-            "fcxfer": fcxfer_by_tag,
-            "jfsfile": jfsfile_data_by_tag,
-            "memuse": memuse_data_by_tag,
-            "page": page_data_by_tag,
-            "sea": sea_data_by_tag,
-            "seachphy": seachphy_data_by_tag,
-            "seapacket": seapacket_data_by_tag,
-            "mem_mb": mem_mb_data_by_tag,
-            "cpu_use": cpu_use_avg_by_tag,
-        },
-        fc_san_map=fc_san_map,
-    )
+    fc_by_tag = {}
+    fc_read_header = []
+    fc_write_header = []
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f2:
+        for line in f2:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            key = parts[0]
+            if key == 'FCREAD' and len(parts) > 2 and not parts[1].startswith('T'):
+                fc_read_header = parts[2:]
+                continue
+            if key == 'FCWRITE' and len(parts) > 2 and not parts[1].startswith('T'):
+                fc_write_header = parts[2:]
+                continue
+            if key == 'FCREAD' and len(parts) > 2 and parts[1].startswith('T'):
+                tag = parts[1]
+                numeric_vals = []
+                for x in parts[2:]:
+                    try:
+                        numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                    except:
+                        numeric_vals.append(0.0)
+                if fc_read_header:
+                    for i, iface in enumerate(fc_read_header):
+                        val = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        fc_by_tag.setdefault(tag, {})
+                        fc_by_tag[tag][f"{iface}-read"] = val
+            if key == 'FCWRITE' and len(parts) > 2 and parts[1].startswith('T'):
+                tag = parts[1]
+                numeric_vals = []
+                for x in parts[2:]:
+                    try:
+                        numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                    except:
+                        numeric_vals.append(0.0)
+                if fc_write_header:
+                    for i, iface in enumerate(fc_write_header):
+                        val = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        fc_by_tag.setdefault(tag, {})
+                        fc_by_tag[tag][f"{iface}-write"] = val
 
-    top_docs = build_top_docs(top_data_by_tag, zzzz_map)
+    net_size_by_tag = {}
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f3:
+        for line in f3:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            if parts[0] == 'NETSIZE':
+                if len(parts) > 2 and not parts[1].startswith('T'):
+                    continue
+                if len(parts) > 2 and parts[1].startswith('T'):
+                    tag = parts[1]
+                    numeric_vals = []
+                    for x in parts[2:]:
+                        try:
+                            numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                        except:
+                            numeric_vals.append(0.0)
+                    if len(numeric_vals) >= 4:
+                        net_size_by_tag.setdefault(tag, {})
+                        net_size_by_tag[tag]['en2-readsize']    = numeric_vals[0]
+                        net_size_by_tag[tag]['lo0-readsize']    = numeric_vals[1]
+                        net_size_by_tag[tag]['en2-writesize']   = numeric_vals[2]
+                        net_size_by_tag[tag]['lo0-writesize']   = numeric_vals[3]
 
-    lpm_docs = []
-    for item in lpm_data:
-        lpm_docs.append({
-            '@timestamp': item['timestamp'],
-            'state': item['state'],
-            'old_serial': item['old_serial'],
-            'current_serial': item['current_serial']
-        })
+    
+    # --- NEW: NETERROR (Network Errors & Collisions) ---
+    net_error_by_tag = {}
+    neterror_header = []
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f_err:
+        for line in f_err:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            if parts[0] == 'NETERROR':
+                # Header example:
+                # NETERROR,Network Errors <Node>,en0-ierrs,lo0-ierrs,en0-oerrs,lo0-oerrs,en0-collisions,lo0-collisions
+                if len(parts) > 2 and not parts[1].startswith('T'):
+                    neterror_header = parts[2:]
+                    continue
+                # Data lines only if tag like Txxxx
+                if len(parts) > 2 and parts[1].startswith('T') and neterror_header:
+                    tag = parts[1]
+                    numeric_vals = []
+                    for x in parts[2:]:
+                        try:
+                            numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                        except:
+                            numeric_vals.append(0.0)
+                    d = {}
+                    for i, col_name in enumerate(neterror_header):
+                        d[col_name] = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                    net_error_by_tag[tag] = d
+    fcxfer_by_tag = {}
+    fcxfer_in_header = []
+    fcxfer_out_header = []
+    with open(nmon_file, 'r', encoding='utf-8' , errors='ignore') as f4:
+        for line in f4:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            key = parts[0]
+            if key == 'FCXFERIN' and len(parts) > 2 and not parts[1].startswith('T'):
+                fcxfer_in_header = parts[2:]
+                continue
+            if key == 'FCXFEROUT' and len(parts) > 2 and not parts[1].startswith('T'):
+                fcxfer_out_header = parts[2:]
+                continue
+            if key == 'FCXFERIN' and len(parts) > 2 and parts[1].startswith('T'):
+                tag = parts[1]
+                numeric_vals = []
+                for x in parts[2:]:
+                    try:
+                        numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                    except:
+                        numeric_vals.append(0.0)
+                if fcxfer_in_header:
+                    for i, iface in enumerate(fcxfer_in_header):
+                        val = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        fcxfer_by_tag.setdefault(tag, {})
+                        fcxfer_by_tag[tag][f"{iface}-in"] = val
+            if key == 'FCXFEROUT' and len(parts) > 2 and parts[1].startswith('T'):
+                tag = parts[1]
+                numeric_vals = []
+                for x in parts[2:]:
+                    try:
+                        numeric_vals.append(float(x.strip()) if x.strip() else 0.0)
+                    except:
+                        numeric_vals.append(0.0)
+                if fcxfer_out_header:
+                    for i, iface in enumerate(fcxfer_out_header):
+                        val = numeric_vals[i] if i < len(numeric_vals) else 0.0
+                        fcxfer_by_tag.setdefault(tag, {})
+                        fcxfer_by_tag[tag][f"{iface}-out"] = val
 
-    if not skip_ndjson:
+    # --- NEW: Extract fcs -> san_id mapping from BBBF lines (Port FC ID) ---
+        fc_san_map = {}
+        try:
+            with open(nmon_file, 'r', encoding='utf-8', errors='ignore') as f_bbbf:
+                for line in f_bbbf:
+                    if not line.startswith('BBBF'):
+                        continue
+                    if 'Port FC ID' not in line:
+                        continue
+                    parts_line = [x.strip() for x in line.strip().split(',')]
+                    fcs_name = None
+                    for tok in parts_line:
+                        if tok.startswith('fcs'):
+                            fcs_name = tok
+                            break
+                    # take the last token as the hex id field when possible
+                    last_field = parts_line[-1] if parts_line else ''
+                    m = re.search(r'0x([0-9a-fA-F]{2})', last_field) or re.search(r'0x([0-9a-fA-F]{2})', line)
+                    if fcs_name and m:
+                        san_id = m.group(1).lower()
+                        fc_san_map[fcs_name] = san_id
+        except Exception as _e:
+            # keep original logic intact; mapping is optional
+            fc_san_map = {}
+        all_docs = build_all_docs(
+            cpu_data,
+            lpar_data,
+            proc_data,
+            file_io_data,
+            memnew_data_by_tag,
+            zzzz_map,
+            mem_data_by_tag,
+            net_data_by_tag,
+            netpacket_data_by_tag,
+            diskread_data_by_tag,
+            diskwrite_data_by_tag,
+            diskbusy_data_by_tag,
+            diskwait_data_by_tag,
+            vgread_data_by_tag,
+            vgwrite_data_by_tag,
+            vgbusy_data_by_tag,
+            vgsize_data_by_tag
+        )
+
+        for d in all_docs:
+            tag_time = d["@timestamp"]
+            the_tag = None
+            for tkey, tval in zzzz_map.items():
+                if tval == tag_time:
+                    the_tag = tkey
+                    break
+            # NEW: add FC SAN map if available
+            if fc_san_map:
+                d["fc_san_map"] = fc_san_map
+            if the_tag and the_tag in net_size_by_tag:
+                d["netsize"] = net_size_by_tag[the_tag]
+            if the_tag and the_tag in net_error_by_tag:
+                d["neterror"] = net_error_by_tag[the_tag]
+
+            if the_tag and the_tag in fc_by_tag:
+                d["fc"] = fc_by_tag[the_tag]
+            if the_tag and the_tag in fcxfer_by_tag:
+                d["fcxfer"] = fcxfer_by_tag[the_tag]
+            if the_tag and the_tag in jfsfile_data_by_tag:
+                d["jfsfile"] = jfsfile_data_by_tag[the_tag]
+            # NEW: add FS Cache Memory Use data if available
+            if the_tag and the_tag in memuse_data_by_tag:
+                d["memuse"] = memuse_data_by_tag[the_tag]
+            # NEW: add paging data if available
+            if the_tag and the_tag in page_data_by_tag:
+                d["page"] = page_data_by_tag[the_tag]
+            # NEW: add SEA data if available
+            if the_tag and the_tag in sea_data_by_tag:
+                d["sea"] = sea_data_by_tag[the_tag]
+            # NEW: add SEA PHY data if available
+            if the_tag and the_tag in seachphy_data_by_tag:
+                d["seachphy"] = seachphy_data_by_tag[the_tag]
+            # NEW: add SEA Packets/s data if available
+            if the_tag and the_tag in seapacket_data_by_tag:
+                d["seapacket"] = seapacket_data_by_tag[the_tag]
+            # NEW: add MEM MB data if available
+            if the_tag and the_tag in mem_mb_data_by_tag:
+                d["mem_mb"] = mem_mb_data_by_tag[the_tag]
+            # NEW: add CPU Use per logical CPU data if available (fixed)
+            if the_tag and the_tag in cpu_use_data_by_tag:
+                d["cpu_use"] = { cpu: {"user": rec["user_sum"] / rec["count"], "sys": rec["sys_sum"] / rec["count"]} 
+                                 for cpu, rec in cpu_use_data_by_tag[the_tag].items() }
+        top_docs = build_top_docs(top_data_by_tag, zzzz_map)
+
+        # NEW: Create LPM docs
+        lpm_docs = []
+        for item in lpm_data:
+            lpm_docs.append({
+                '@timestamp': item['timestamp'],
+                'state': item['state'],
+                'old_serial': item['old_serial'],
+                'current_serial': item['current_serial']
+            })
+
         base_name = os.path.splitext(os.path.basename(nmon_file))[0]
         out_all_dir = os.path.join(output_dir, "all")
         os.makedirs(out_all_dir, exist_ok=True)
@@ -4017,12 +3774,11 @@ def process_file(nmon_file, output_dir, skip_ndjson=False):
         write_ndjson(top_docs, top_path)
         print(f"Wrote {len(top_docs)} top docs => {top_path}")
 
-    return (node, frame, all_docs, top_docs, lpm_docs)
+        return (node, frame, all_docs, top_docs, lpm_docs)
 
-
-################################################################################
-# 6. main => parse => build => single HTML
-################################################################################
+    ################################################################################
+    # 6. main => parse => build => single HTML (16 + 5 = 21 charts total, plus new JFS, SEA, SEA Stacked, SEA Packets/s, MEM MB, Top PID charts)
+    ################################################################################
 
 def main():
     parser = argparse.ArgumentParser(
@@ -4031,7 +3787,6 @@ def main():
     parser.add_argument("--input_dir", type=str, required=True, help="Folder containing .nmon files")
     parser.add_argument("--output_dir", type=str, required=True, help="Output folder for NDJSON & HTML")
     parser.add_argument("--processes", type=int, default=cpu_count(), help="Number of processes to use")
-    parser.add_argument("--skip-ndjson", action="store_true", help="Skip writing intermediate all/top NDJSON files")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -4044,13 +3799,10 @@ def main():
     top_data_map = {}
     lpm_data_map = {}
     frame_map = {}
-    tasks = [(fp, args.output_dir, args.skip_ndjson) for fp in nmon_files]
+    tasks = [(fp, args.output_dir) for fp in nmon_files]
 
-    if len(tasks) == 1 or args.processes <= 1:
-        results = [process_file(*task) for task in tasks]
-    else:
-        with Pool(processes=args.processes) as p:
-            results = p.starmap(process_file, tasks)
+    with Pool(processes=args.processes) as p:
+        results = p.starmap(process_file, tasks)
 
     for (nodeName, frameName, all_docs, top_docs, lpm_docs) in results:
         if nodeName not in lpar_data_map:
