@@ -857,870 +857,6 @@ def write_ndjson(docs, filepath):
 #   NEW: A new graph for LPM Migration Events (BBBR) is added after the JFS Percent Full chart.
 ################################################################################
 
-DASHBOARD_THEME_CSS = r"""
-            :root {
-                color-scheme: light;
-                --bg: #f3efe7;
-                --surface: #faf7f1;
-                --surface-raised: #fffdf8;
-                --surface-subtle: #ebe4d9;
-                --text: #23221f;
-                --text-soft: #494640;
-                --muted: #746e65;
-                --border: #d8d0c4;
-                --border-strong: #bcb2a4;
-                --accent: #c26142;
-                --accent-rgb: 194, 97, 66;
-                --accent-soft: #efddd3;
-                --active-bg: #282724;
-                --active-text: #fffaf2;
-                --hover: #e9e2d7;
-                --success: #627b67;
-                --warning: #a87532;
-                --danger: #a64f42;
-                --chart-1: #c26142;
-                --chart-2: #6f665e;
-                --chart-3: #87917d;
-                --chart-4: #c49a69;
-                --chart-5: #8b7062;
-                --chart-6: #a88f7f;
-                --chart-7: #65796f;
-                --chart-8: #b8aa98;
-                --chart-inspected: #b9afa2;
-                --chart-transferred: #34322e;
-                --chart-duration: #c26142;
-                --chart-lan: #71816f;
-                --chart-lanfree: #b8795f;
-                --chart-pct-dedup: #5f7a72;
-                --chart-pct-compress: #8c7355;
-                --chart-insp-count: #6e7f92;
-                --chart-proc: #9a8060;
-                --chart-fail: #9b5e55;
-                --chart-retr: #7a8470;
-                --radius-sm: 3px;
-                --radius-md: 6px;
-                --space-1: 4px;
-                --space-2: 8px;
-                --space-3: 12px;
-                --space-4: 16px;
-                --space-5: 24px;
-                --space-6: 32px;
-                --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-                --font-ui: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
-            }
-
-            * {
-                box-sizing: border-box;
-            }
-
-            html {
-                background: var(--bg);
-                scroll-behavior: smooth;
-            }
-
-            body {
-                margin: 0;
-                background: var(--bg);
-                color: var(--text);
-                font-family: var(--font-ui);
-                font-size: 12px;
-                line-height: 1.4;
-                transition: background-color 180ms ease, color 180ms ease;
-            }
-
-            body.dark-mode {
-                color-scheme: dark;
-                --bg: #1c1b18;
-                --surface: #24221e;
-                --surface-raised: #2a2823;
-                --surface-subtle: #312e28;
-                --text: #eee7dc;
-                --text-soft: #cec4b7;
-                --muted: #a79d90;
-                --border: #413d36;
-                --border-strong: #5a544a;
-                --accent: #dd7c5e;
-                --accent-rgb: 221, 124, 94;
-                --accent-soft: #4a3028;
-                --active-bg: #e9dfd1;
-                --active-text: #25221e;
-                --hover: #35322c;
-                --success: #87a18b;
-                --warning: #c79a59;
-                --danger: #d47b6c;
-                --chart-1: #dd7c5e;
-                --chart-2: #b5a89b;
-                --chart-3: #9eaa91;
-                --chart-4: #d2aa77;
-                --chart-5: #bc9583;
-                --chart-6: #c4aa9b;
-                --chart-7: #8fa69a;
-                --chart-8: #c7b9a7;
-                --chart-inspected: #8f877d;
-                --chart-transferred: #e5dbce;
-                --chart-duration: #dd7c5e;
-                --chart-lan: #91a38f;
-                --chart-lanfree: #cf876b;
-                --chart-pct-dedup: #7f9a91;
-                --chart-pct-compress: #b8976f;
-                --chart-insp-count: #8fa0b3;
-                --chart-proc: #b89a74;
-                --chart-fail: #c48478;
-                --chart-retr: #9aa68c;
-            }
-
-            button,
-            input,
-            select {
-                font: inherit;
-            }
-
-            button,
-            [onclick] {
-                -webkit-tap-highlight-color: transparent;
-            }
-
-            ::selection {
-                background: var(--accent-soft);
-                color: var(--text);
-            }
-
-            .page-shell {
-                width: min(100%, 1920px);
-                margin: 0 auto;
-                padding: 0 clamp(16px, 2.2vw, 42px) var(--space-6);
-            }
-
-            .site-header {
-                min-height: 148px;
-                display: flex;
-                align-items: flex-end;
-                justify-content: space-between;
-                gap: var(--space-6);
-                padding: 34px 0 24px;
-                border-bottom: 1px solid var(--border-strong);
-            }
-
-            .header-logo-container {
-                min-width: 0;
-            }
-
-            .header-kicker,
-            .section-kicker,
-            .analytics-kicker {
-                display: block;
-                margin: 0 0 7px;
-                color: var(--accent);
-                font-size: 0.66rem;
-                font-weight: 700;
-                letter-spacing: 0.15em;
-                line-height: 1;
-                text-transform: uppercase;
-            }
-
-            .header-title-row {
-                display: flex;
-                align-items: baseline;
-                flex-wrap: wrap;
-                gap: 0.2em;
-            }
-
-            .text-spectrum {
-                font-family: var(--font-display);
-                font-size: clamp(2.35rem, 4vw, 4.7rem);
-                font-weight: 400;
-                letter-spacing: -0.045em;
-                line-height: 0.95;
-            }
-
-            .header-description {
-                max-width: 650px;
-                margin: 14px 0 0;
-                color: var(--text-soft);
-                font-size: 0.86rem;
-            }
-
-            .header-actions {
-                display: flex;
-                align-items: center;
-                gap: var(--space-3);
-                padding-bottom: 2px;
-                flex-shrink: 0;
-            }
-
-            .report-status {
-                display: flex;
-                align-items: center;
-                gap: 7px;
-                color: var(--muted);
-                font-size: 0.68rem;
-                font-weight: 650;
-                letter-spacing: 0.08em;
-                text-transform: uppercase;
-            }
-
-            .report-status::before {
-                width: 6px;
-                height: 6px;
-                border-radius: 50%;
-                background: var(--success);
-                content: "";
-            }
-
-            .theme-toggle {
-                position: fixed;
-                top: 14px;
-                right: 14px;
-                z-index: 1200;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                width: 32px;
-                height: 32px;
-                margin: 0;
-                padding: 0;
-                border: none;
-                border-radius: 999px;
-                background: #ededeb;
-                color: #111110;
-                cursor: pointer;
-                box-shadow: none;
-                transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
-            }
-
-            .theme-toggle:hover {
-                color: #111110;
-            }
-
-            .theme-toggle:focus-visible {
-                outline: 2px solid var(--accent);
-                outline-offset: 2px;
-            }
-
-            .theme-toggle svg {
-                width: 15px;
-                height: 15px;
-                display: block;
-                flex-shrink: 0;
-                stroke: currentColor;
-                fill: none;
-                stroke-width: 1.5;
-                stroke-linecap: round;
-                stroke-linejoin: round;
-            }
-
-            .theme-toggle .icon-moon {
-                display: none;
-            }
-
-            body.dark-mode .theme-toggle {
-                background: #2a2824;
-                color: #fff;
-            }
-
-            body.dark-mode .theme-toggle:hover {
-                color: #d8d0c4;
-            }
-
-            body.dark-mode .theme-toggle .icon-sun {
-                display: none;
-            }
-
-            body.dark-mode .theme-toggle .icon-moon {
-                display: block;
-            }
-
-            .section-block {
-                margin-top: var(--space-6);
-            }
-
-            .section-intro {
-                display: flex;
-                align-items: flex-end;
-                justify-content: space-between;
-                gap: var(--space-5);
-                margin-bottom: var(--space-4);
-            }
-
-            .section-heading {
-                margin: 0;
-                font-family: var(--font-display);
-                font-size: clamp(1.6rem, 2.15vw, 2.5rem);
-                font-weight: 400;
-                letter-spacing: -0.025em;
-                line-height: 1;
-            }
-
-            .section-description {
-                max-width: 560px;
-                margin: 0;
-                color: var(--muted);
-                font-size: 0.76rem;
-                text-align: right;
-            }
-
-            .sticky-wrapper {
-                position: sticky;
-                top: 0;
-                z-index: 50;
-                margin: 0 calc(clamp(16px, 2.2vw, 42px) * -1);
-                padding: 0 clamp(16px, 2.2vw, 42px);
-                background: var(--bg);
-                border-bottom: 2px solid #000;
-                overflow-anchor: none;
-            }
-
-            body.dark-mode .sticky-wrapper {
-                border-bottom-color: #fff;
-            }
-
-            .sticky-wrapper .site-header,
-            .sticky-wrapper .analytics-header,
-            .sticky-wrapper .analytics-meta,
-            .sticky-wrapper .header-kicker,
-            .sticky-wrapper .header-description,
-            .sticky-wrapper .text-spectrum,
-            .sticky-wrapper .header-actions {
-                transition:
-                    min-height 280ms ease,
-                    padding 280ms ease,
-                    margin 280ms ease,
-                    opacity 220ms ease,
-                    max-height 280ms ease,
-                    font-size 280ms ease,
-                    gap 280ms ease;
-            }
-
-            .sticky-wrapper .header-kicker,
-            .sticky-wrapper .header-description,
-            .sticky-wrapper .analytics-meta {
-                overflow: hidden;
-                max-height: 6em;
-            }
-
-            .sticky-wrapper .header-kicker,
-            .sticky-wrapper .analytics-meta {
-                max-height: 2em;
-            }
-
-            .sticky-wrapper.is-compact .site-header {
-                min-height: 0;
-                align-items: center;
-                gap: var(--space-3);
-                padding: 8px 0 6px;
-            }
-
-            .sticky-wrapper.is-compact .header-kicker,
-            .sticky-wrapper.is-compact .header-description {
-                opacity: 0;
-                max-height: 0;
-                margin: 0;
-                pointer-events: none;
-            }
-
-            .sticky-wrapper.is-compact .text-spectrum {
-                font-size: clamp(1.05rem, 1.6vw, 1.45rem);
-                letter-spacing: -0.03em;
-                line-height: 1.1;
-            }
-
-            .sticky-wrapper.is-compact .header-actions {
-                padding-bottom: 0;
-            }
-
-            .sticky-wrapper.is-compact .analytics-header {
-                padding: 4px 0 8px;
-            }
-
-            .sticky-wrapper.is-compact .analytics-meta {
-                opacity: 0;
-                max-height: 0;
-                margin: 0;
-                pointer-events: none;
-            }
-
-            @media (prefers-reduced-motion: reduce) {
-                .sticky-wrapper .site-header,
-                .sticky-wrapper .analytics-header,
-                .sticky-wrapper .analytics-meta,
-                .sticky-wrapper .header-kicker,
-                .sticky-wrapper .header-description,
-                .sticky-wrapper .text-spectrum,
-                .sticky-wrapper .header-actions {
-                    transition: none;
-                }
-            }
-
-            .analytics-header {
-                border-top: 0;
-                padding: 10px 0 11px;
-            }
-
-            .analytics-meta {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: var(--space-3);
-                margin-bottom: 8px;
-            }
-
-            .analytics-kicker {
-                margin: 0;
-                color: var(--muted);
-            }
-
-            .analytics-context {
-                color: var(--muted);
-                font-size: 0.67rem;
-                letter-spacing: 0.06em;
-                text-transform: uppercase;
-            }
-
-            .chart-box,
-            .chart-container {
-                display: flex;
-                min-width: 0;
-                min-height: 0;
-                flex-direction: column;
-                overflow: hidden;
-                padding: 8px;
-                border: 1px solid var(--border);
-                border-radius: var(--radius-md);
-                background: var(--surface);
-            }
-
-            .chart-container {
-                height: 400px;
-            }
-
-            .chart-container > div {
-                width: 100%;
-                height: 100%;
-                min-height: 0;
-            }
-
-            .chart-container p {
-                margin: 0;
-                padding: 20px;
-                color: var(--muted);
-                font-size: 0.68rem;
-                text-align: center;
-            }
-
-            .chart-header {
-                display: flex;
-                min-height: 28px;
-                align-items: flex-start;
-                justify-content: space-between;
-                gap: var(--space-3);
-                margin-bottom: 10px;
-                padding-bottom: 9px;
-                border-bottom: 1px solid var(--border);
-            }
-
-            .chart-title {
-                min-width: 0;
-                overflow: hidden;
-                color: var(--text);
-                font-family: var(--font-display);
-                font-size: 0.88rem;
-                font-weight: 400;
-                letter-spacing: -0.01em;
-                line-height: 1.2;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-            }
-
-            .lf-toggle {
-                display: inline-flex;
-                max-width: 100%;
-                overflow: hidden;
-                border: 1px solid var(--border);
-                border-radius: var(--radius-sm);
-                background: var(--surface-raised);
-            }
-
-            .lf-btn {
-                display: inline-flex;
-                min-height: 23px;
-                align-items: center;
-                justify-content: center;
-                padding: 2px 8px;
-                border: 0;
-                border-right: 1px solid var(--border);
-                background: transparent;
-                color: var(--muted);
-                cursor: pointer;
-                font-size: 0.65rem;
-                font-weight: 650;
-                letter-spacing: 0.02em;
-                line-height: 1;
-                user-select: none;
-                white-space: nowrap;
-                transition: background-color 120ms ease, color 120ms ease;
-            }
-
-            .lf-btn:last-child {
-                border-right: 0;
-            }
-
-            .lf-btn:hover {
-                background: var(--hover);
-                color: var(--text);
-            }
-
-            .lf-btn.active {
-                background: var(--active-bg);
-                color: var(--active-text);
-            }
-
-            .filter-panel {
-                margin-top: 0;
-                padding: 8px 0 4px;
-                border-top: 0;
-                border-bottom: 0;
-            }
-
-            .filter-row-container {
-                display: flex;
-                align-items: flex-end;
-                gap: 11px;
-                flex-wrap: wrap;
-            }
-
-            .chart-filter-label {
-                align-self: center;
-                margin-right: 7px;
-                color: var(--text);
-                font-family: var(--font-display);
-                font-size: 0.95rem;
-                white-space: nowrap;
-            }
-
-            .filter-divider {
-                width: 1px;
-                height: 31px;
-                margin: 0 2px;
-                align-self: flex-end;
-                background: var(--border);
-            }
-
-            .filter-group {
-                display: flex;
-                min-width: 0;
-                flex-direction: column;
-            }
-
-            .filter-group label,
-            .control-label {
-                margin-bottom: 4px;
-                color: var(--muted);
-                font-size: 0.59rem;
-                font-weight: 700;
-                letter-spacing: 0.08em;
-                line-height: 1;
-                text-transform: uppercase;
-            }
-
-            input[type="date"],
-            input[type="time"],
-            input[type="text"],
-            input[type="number"],
-            select,
-            .ms-trigger {
-                height: 29px;
-                border: 1px solid var(--border);
-                border-radius: var(--radius-sm);
-                background: var(--surface-raised);
-                color: var(--text);
-                outline: 0;
-                transition: border-color 120ms ease, background-color 120ms ease;
-            }
-
-            input[type="date"],
-            input[type="time"] {
-                width: 116px;
-                padding: 3px 6px;
-                font-size: 0.69rem;
-            }
-
-            input[type="text"] {
-                width: 160px;
-                padding: 3px 8px;
-                font-size: 0.69rem;
-            }
-
-            select {
-                min-width: 72px;
-                max-width: 220px;
-                padding: 3px 8px;
-                font-size: 0.69rem;
-            }
-
-            input:focus,
-            select:focus {
-                border-color: var(--accent);
-            }
-
-            .filter-actions {
-                display: flex;
-                align-items: center;
-                justify-content: flex-end;
-                gap: 6px;
-                flex: 1 1 140px;
-                margin-left: auto;
-            }
-
-            button.btn-reset,
-            .tf-btn-action,
-            .tf-btn-mode {
-                min-height: 29px;
-                padding: 4px 10px;
-                border: 1px solid var(--border);
-                border-radius: var(--radius-sm);
-                background: var(--surface-raised);
-                color: var(--text-soft);
-                cursor: pointer;
-                font-size: 0.65rem;
-                font-weight: 650;
-                letter-spacing: 0.015em;
-                transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
-            }
-
-            button.btn-reset:hover,
-            .tf-btn-action:hover,
-            .tf-btn-mode:hover {
-                border-color: var(--border-strong);
-                background: var(--hover);
-                color: var(--text);
-            }
-
-            button.btn-primary,
-            .tf-btn-action.tf-apply {
-                border-color: var(--active-bg);
-                background: var(--active-bg);
-                color: var(--active-text);
-            }
-
-            button.btn-accent {
-                border-color: var(--accent);
-                background: var(--accent);
-                color: #fffaf2;
-            }
-
-            .empty-state {
-                padding: 20px;
-                color: var(--muted);
-                font-size: 0.68rem;
-                text-align: center;
-            }
-
-            svg text {
-                font-family: var(--font-ui);
-            }
-
-            #chartsContainer {
-                display: grid;
-                gap: var(--space-3);
-                width: 100%;
-                margin-top: 0;
-            }
-
-            #chartsContainer::after {
-                content: none;
-            }
-
-            .chart-container.fullscreen {
-                position: fixed !important;
-                top: 0 !important;
-                left: 0 !important;
-                width: 100vw !important;
-                height: 100vh !important;
-                z-index: 3000;
-                margin: 0;
-                padding: 16px;
-                border: none !important;
-                border-radius: 0;
-                background: var(--bg);
-            }
-
-            .chart-container.hidden {
-                display: none !important;
-            }
-
-            body.fullscreen-mode .sticky-wrapper,
-            body.fullscreen-mode .theme-toggle,
-            body.fullscreen-mode .section-intro {
-                display: none !important;
-            }
-
-            #menu_b {
-                margin-top: 8px;
-                padding-top: 12px;
-                border-top: 1px dashed var(--border);
-            }
-
-            .js-plotly-plot .plotly .modebar {
-                left: auto !important;
-                right: 8px !important;
-                top: 4px !important;
-                background: transparent !important;
-            }
-
-            .js-plotly-plot .plotly .modebar-btn path {
-                fill: var(--muted) !important;
-            }
-
-            .js-plotly-plot .plotly .modebar-btn:hover path {
-                fill: var(--text) !important;
-            }
-
-            .js-plotly-plot .plotly .modebar-btn.active path {
-                fill: var(--accent) !important;
-            }
-
-            @media (max-width: 1280px) {
-                .site-header {
-                    min-height: 130px;
-                    padding-top: 26px;
-                }
-
-                .section-description {
-                    max-width: 430px;
-                }
-            }
-
-            @media (max-width: 900px) {
-                .site-header {
-                    align-items: flex-start;
-                    flex-direction: column;
-                    gap: var(--space-4);
-                    padding: 24px 0 18px;
-                }
-
-                .header-actions {
-                    width: 100%;
-                    justify-content: space-between;
-                }
-
-                .section-intro {
-                    align-items: flex-start;
-                    flex-direction: column;
-                    gap: 8px;
-                }
-
-                .section-description {
-                    max-width: none;
-                    text-align: left;
-                }
-
-                .filter-divider {
-                    display: none;
-                }
-            }
-
-            @media (max-width: 560px) {
-                .page-shell {
-                    padding-right: 12px;
-                    padding-left: 12px;
-                }
-
-                .sticky-wrapper {
-                    margin-right: -12px;
-                    margin-left: -12px;
-                    padding-right: 12px;
-                    padding-left: 12px;
-                }
-
-                .text-spectrum {
-                    font-size: 2.45rem;
-                }
-
-                .sticky-wrapper.is-compact .text-spectrum {
-                    font-size: 1.05rem;
-                }
-
-                .report-status {
-                    display: none;
-                }
-
-                .filter-row-container {
-                    gap: 9px;
-                }
-
-                .filter-actions {
-                    width: 100%;
-                    flex-basis: 100%;
-                    justify-content: flex-start;
-                    margin-top: 3px;
-                }
-            }
-
-            @media print {
-                body {
-                    background: #fff;
-                }
-
-                .header-actions,
-                .theme-toggle,
-                .filter-panel {
-                    display: none !important;
-                }
-
-                .sticky-wrapper {
-                    position: static !important;
-                }
-
-                .sticky-wrapper .site-header,
-                .sticky-wrapper .analytics-header,
-                .sticky-wrapper .analytics-meta,
-                .sticky-wrapper .header-kicker,
-                .sticky-wrapper .header-description,
-                .sticky-wrapper .text-spectrum,
-                .sticky-wrapper .header-actions {
-                    transition: none !important;
-                }
-
-                .sticky-wrapper.is-compact .site-header {
-                    min-height: 148px;
-                    align-items: flex-end;
-                    gap: var(--space-6);
-                    padding: 34px 0 24px;
-                }
-
-                .sticky-wrapper.is-compact .header-kicker,
-                .sticky-wrapper.is-compact .header-description,
-                .sticky-wrapper.is-compact .analytics-meta {
-                    opacity: 1 !important;
-                    max-height: none !important;
-                    margin: revert !important;
-                    pointer-events: auto !important;
-                }
-
-                .sticky-wrapper.is-compact .header-kicker {
-                    margin: 0 0 7px !important;
-                }
-
-                .sticky-wrapper.is-compact .header-description {
-                    margin: 14px 0 0 !important;
-                }
-
-                .sticky-wrapper.is-compact .analytics-meta {
-                    margin-bottom: 8px !important;
-                }
-
-                .sticky-wrapper.is-compact .text-spectrum {
-                    font-size: clamp(2.35rem, 4vw, 4.7rem);
-                    letter-spacing: -0.045em;
-                    line-height: 0.95;
-                }
-
-                .sticky-wrapper.is-compact .analytics-header {
-                    padding: 10px 0 11px;
-                }
-            }
-"""
-
 def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, output_html):
     """
     Original charts: 16 charts + 5 new DISK/VG charts.
@@ -1754,190 +890,182 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <title>nmon2plotly · Performance Analytics</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <title>NMON Consolidated (16-charts + DISK/VG charts, no VG SIZE)</title>
   <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
   <style>
-{DASHBOARD_THEME_CSS}
+    body {{
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+      transition: background 0.3s, color 0.3s;
+    }}
+    .logo {{
+      position: absolute;
+      top: 5px;
+      left: 4px;
+      width: 200px;
+      z-index: 1000;
+    }}
+    
+    .menu {{
+      margin: 1px;
+      position: absolute;
+      top: 10px;       /* sits just below the toggle bar */
+      left: 0;
+      width: 100%;
+      z-index: 3500;    /* above the fullscreen chart (zâ€‘index:3000) */
+      background: inherit; /* preserve light/dark background */
+      }}
+      
+      #chartsContainer {{
+       width: 100%;
+       overflow: hidden; /* so floats don't extend container */
+       margin-top: 140px; /* leave room for fixed menu */
+     }}
+     
+    .chart-container {{
+      float: left;
+      border: 2px solid #ccc;
+      box-sizing: border-box;
+      height: 400px; /* fixed chart height */
+      border-radius: 2%; 
+      overflow: hidden;
+    }}
+    
+    .chart-container > div {{
+      width: 100%;
+      height: 100%;
+    }}
+    #chartsContainer::after {{
+      content: "";
+      display: block;
+      clear: both;
+    }}
+     /* =============================== */
+    /* Darkâ€‘mode toggle styles below: */
+    /* =============================== */
+    .toggle-container {{
+      position: absolute;
+      top: 80px;
+      right: 20px;
+      z-index: 1000;
+    
+  display:flex;
+  gap:8px;
+  align-items:center;
+}}
+    
+    .toggle {{
+      width: 60px;
+      height: 30px;
+      background: #ddd;
+      border-radius: 30px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.3s;
+    }}
+    
+    /* ======================================== */
+    /* Make the top menu & chart borders dark  */
+    /* ======================================== */
+     body.dark-mode .menu {{ background-color: #0d1b2a !important;}}
+     body.dark-mode .menu label,
+     body.dark-mode .menu select,
+     body.dark-mode .menu input,
+     body.dark-mode .menu button {{ background-color: #1f2a3a !important; color: white !important; border: 1px solid #444 !important; }}
+     body.dark-mode .chart-container {{ border-color: white !important;}}
+     
+    .toggle.dark {{ background: #333; }}
+    .toggle .slider {{width: 26px;height: 26px ; background: white; border-radius: 50%; position: absolute; top: 2px;left: 2px; transition: all 0.3s;}}
+    
+    .icon {{position: absolute; top: 50%; transform: translateY(-50%); font-size: 14px; pointer-events: none; }}
+    .sun {{ left: 10px; color: #555; }}
+    .moon {{ right: 10px; color: #fff; }}
+    
+    .toggle.dark .slider {{ left: 32px; background: #000; }} 
+    .toggle.dark .sun {{ color: #fff; }}
+    .toggle.dark .moon {{ color: #999; }}
+
+  /* ===================================== */
+  /* Fullâ€‘screen chart styles */
+  .chart-container.fullscreen {{
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 3000;
+    margin: 0;
+    border: none !important;
+  }}
+  .chart-container.hidden {{
+    display: none !important;
+  }}
   </style>
+  
 </head>
 <body>
-  <script>
-  (function () {{
-    var theme = 'light';
-    try {{
-      var stored = localStorage.getItem('dashboard-theme');
-      if (stored === 'system' || stored === 'light' || stored === 'dark') theme = stored;
-    }} catch (e) {{}}
-    var dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    document.body.classList.toggle('dark-mode', dark);
-  }})();
-  </script>
-  <button type="button" class="theme-toggle" id="modeToggle" aria-label="Switch to dark theme" title="Light" aria-pressed="false">
-      <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="12" cy="12" r="3.25"></circle>
-          <path d="M12 2.75v2.1M12 19.15v2.1M2.75 12h2.1M19.15 12h2.1M5.64 5.64l1.48 1.48M16.88 16.88l1.48 1.48M5.64 18.36l1.48-1.48M16.88 7.12l1.48-1.48"></path>
-      </svg>
-      <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M15.4 3.6a8.7 8.7 0 1 0 4.95 15.55A7.05 7.05 0 0 1 15.4 3.6z"></path>
-      </svg>
-  </button>
-  <div class="page-shell">
-    <div id="dashboard-sticky-top" class="sticky-wrapper">
-      <header class="site-header">
-        <div class="header-logo-container">
-          <span class="header-kicker">Infrastructure intelligence</span>
-          <div class="header-title-row">
-            <span class="text-spectrum">nmon2plotly</span>
-          </div>
-          <p class="header-description">A focused view of CPU, memory, disk, network and adapter health across the active estate.</p>
-        </div>
-        <div class="header-actions">
-          <span class="report-status">Live nmon session</span>
-          <div class="lf-toggle">
-            <button type="button" class="lf-btn" id="compareToggle" aria-pressed="false" title="Compare two LPARs">Compare</button>
-          </div>
-        </div>
-      </header>
-      <section class="analytics-header" aria-label="Filtered performance summary">
-        <div class="analytics-meta">
-          <span class="analytics-kicker">Filtered estate</span>
-          <span class="analytics-context" id="analytics-context">Select a frame and LPAR</span>
-        </div>
-        <div class="menu filter-panel" aria-label="Chart filters">
-          <div class="filter-row-container">
-            <span class="chart-filter-label">Chart filters</span>
-            <div class="filter-group">
-              <label for="frame_select">Frame</label>
-              <select id="frame_select"></select>
-            </div>
-            <div class="filter-group">
-              <label for="lpar_select">LPAR</label>
-              <select id="lpar_select"></select>
-            </div>
-            <div class="filter-group">
-              <label for="start_date">Start date</label>
-              <input type="date" id="start_date">
-            </div>
-            <div class="filter-group">
-              <label for="end_date">End date</label>
-              <input type="date" id="end_date">
-            </div>
-            <div class="filter-divider" aria-hidden="true"></div>
-            <div class="filter-group">
-              <label for="chartsPerRow">Charts per row</label>
-              <select id="chartsPerRow">
-                <option value="1">1</option>
-                <option value="2">2</option>
-                <option value="3" selected>3</option>
-                <option value="4">4</option>
-                <option value="5">5</option>
-                <option value="6">6</option>
-                <option value="7">7</option>
-                <option value="8">8</option>
-                <option value="9">9</option>
-                <option value="10">10</option>
-                <option value="11">11</option>
-                <option value="12">12</option>
-                <option value="13">13</option>
-                <option value="14">14</option>
-                <option value="15">15</option>
-                <option value="16">16</option>
-                <option value="17">17</option>
-                <option value="18">18</option>
-                <option value="19">19</option>
-                <option value="20">20</option>
-                <option value="21">21</option>
-                <option value="22">22</option>
-                <option value="23">23</option>
-              </select>
-            </div>
-            <div class="filter-group">
-              <label for="lpar_search">Search LPAR</label>
-              <input type="text" id="lpar_search" list="lpar_datalist" placeholder="Type LPAR name" />
-              <datalist id="lpar_datalist"></datalist>
-            </div>
-            <div class="filter-actions">
-              <button class="btn-reset btn-primary" type="button" onclick="applyFilter()">Filter</button>
-            </div>
-          </div>
-        </div>
-      </section>
+  <div class="toggle-container">
+    <div class="toggle" id="compareToggle">
+      <div class="slider"></div>
+      <div class="icon sun">🅰️</div>
+      <div class="icon moon">🅱️</div>
     </div>
-    <script>
-    (function () {{
-        var stickyTop = document.getElementById('dashboard-sticky-top');
-        if (!stickyTop || stickyTop.dataset.compactScrollBound === '1') return;
-        stickyTop.dataset.compactScrollBound = '1';
-
-        var COMPACT_ON = 56;
-        var EXPAND_ON = 18;
-        var ticking = false;
-        var settling = false;
-        var settleTimer = 0;
-        var lastY = window.scrollY || window.pageYOffset || 0;
-
-        function setCompact(compact) {{
-            if (stickyTop.classList.contains('is-compact') === compact) return;
-            stickyTop.classList.toggle('is-compact', compact);
-            settling = true;
-            window.clearTimeout(settleTimer);
-            settleTimer = window.setTimeout(function () {{
-                settling = false;
-                lastY = window.scrollY || window.pageYOffset || 0;
-            }}, 320);
-        }}
-
-        function syncCompactState() {{
-            ticking = false;
-            if (settling) return;
-
-            var y = window.scrollY || window.pageYOffset || 0;
-            var goingDown = y > lastY + 1;
-            var goingUp = y < lastY - 1;
-            var isCompact = stickyTop.classList.contains('is-compact');
-
-            if (y <= EXPAND_ON) {{
-                setCompact(false);
-            }} else if (y >= COMPACT_ON && (goingDown || !goingUp)) {{
-                setCompact(true);
-            }} else if (goingUp && y < COMPACT_ON) {{
-                setCompact(false);
-            }} else if (!isCompact && y >= COMPACT_ON) {{
-                setCompact(true);
-            }}
-
-            lastY = y;
-        }}
-
-        function onScroll() {{
-            if (!ticking) {{
-                ticking = true;
-                window.requestAnimationFrame(syncCompactState);
-            }}
-        }}
-
-        window.addEventListener('scroll', onScroll, {{ passive: true }});
-        window.addEventListener('beforeprint', function () {{
-            setCompact(false);
-        }});
-        syncCompactState();
-    }})();
-    </script>
-    <main>
-      <section class="section-block" aria-labelledby="overview-heading">
-        <div class="section-intro">
-          <div>
-            <span class="section-kicker">Performance landscape</span>
-            <h1 class="section-heading" id="overview-heading">Estate overview</h1>
-          </div>
-          <p class="section-description">Compare CPU, memory, I/O and adapter health without losing the operational detail behind each sample.</p>
-        </div>
-        <div id="chartsContainer">
+    
+    <div class="toggle" id="modeToggle">
+      <div class="slider"></div>
+      <div class="icon sun">☀️</div>
+      <div class="icon moon">🌙</div>
+    </div>
+  </div>
+  <img src="nmon2plotly.png" alt="nmon2plotly logo" class="logo" />
+  <div class="menu">
+    <label for="frame_select">Select FRAME:</label>
+    <select id="frame_select"></select>
+    &nbsp;&nbsp;
+    <label for="lpar_select">Select LPAR:</label>
+    <select id="lpar_select"></select>
+    &nbsp;&nbsp;
+    <label for="start_date">Start Date:</label>
+    <input type="date" id="start_date">
+    &nbsp;&nbsp;
+    <label for="end_date">End Date:</label>
+    <input type="date" id="end_date">
+    &nbsp;&nbsp;
+    <button onclick="applyFilter()">Filter</button>
+    &nbsp;&nbsp;
+    <label for="chartsPerRow">Charts per Row:</label>
+    <select id="chartsPerRow">
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="3" selected>3</option>
+      <option value="4">4</option>
+      <option value="5">5</option>
+      <option value="6">6</option>
+      <option value="7">7</option>
+      <option value="8">8</option>
+      <option value="9">9</option>
+      <option value="10">10</option>
+      <option value="11">11</option>
+      <option value="12">12</option>
+      <option value="13">13</option>
+      <option value="14">14</option>
+      <option value="15">15</option>
+      <option value="16">16</option>
+      <option value="17">17</option>
+      <option value="18">18</option>
+      <option value="19">19</option>
+      <option value="20">20</option>
+      <option value="21">21</option>
+      <option value="22">22</option>
+      <option value="23">23</option>
+    </select>
+    &nbsp;&nbsp;
+    <label for="lpar_search">Search LPAR:</label>
+    <input id="lpar_search" list="lpar_datalist" placeholder="Type LPAR name" />
+    <datalist id="lpar_datalist"></datalist>
+  </div>
+  <div id="chartsContainer">
     <div class="chart-container"><div id="cpu_usage_chart"></div></div>
     <div class="chart-container"><div id="cpu_use_chart"></div></div>
     <div class="chart-container"><div id="lpar_usage_chart"></div></div>
@@ -1990,119 +1118,12 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
 
     <div class="chart-container"><div id="sea_phy_error_chart"></div></div>
     <div class="chart-container"><div id="sea_phy_drop_chart"></div></div>
-        </div>
-      </section>
-    </main>
   </div>
   <script>
     const lparDataMap = {embedded_all};
     const topDataMap  = {embedded_top};
     const lpmDataMap  = {embedded_lpm};
     const frameMap    = {embedded_frames};
-
-    function themeColor(name) {{
-      return getComputedStyle(document.body).getPropertyValue(name).trim();
-    }}
-
-    function themeRgba(name, alpha) {{
-      const hex = (themeColor(name) || '').replace('#', '');
-      if (hex.length < 6) return themeColor(name);
-      const r = parseInt(hex.slice(0, 2), 16);
-      const g = parseInt(hex.slice(2, 4), 16);
-      const b = parseInt(hex.slice(4, 6), 16);
-      return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + alpha + ')';
-    }}
-
-    function readPlotlyTheme() {{
-      return {{
-        paper: themeColor('--surface'),
-        plot: themeColor('--surface'),
-        text: themeColor('--text'),
-        muted: themeColor('--muted'),
-        border: themeColor('--border'),
-        fontUi: themeColor('--font-ui'),
-        fontDisplay: themeColor('--font-display'),
-        activeBg: themeColor('--active-bg'),
-        activeText: themeColor('--active-text'),
-        borderStrong: themeColor('--border-strong'),
-        colorway: [
-          themeColor('--chart-1'), themeColor('--chart-2'), themeColor('--chart-3'),
-          themeColor('--chart-4'), themeColor('--chart-5'), themeColor('--chart-6'),
-          themeColor('--chart-7'), themeColor('--chart-8')
-        ]
-      }};
-    }}
-
-    function applyPlotlyTheme(layout) {{
-      const t = readPlotlyTheme();
-      const next = Object.assign({{}}, layout || {{}});
-      next.paper_bgcolor = t.paper;
-      next.plot_bgcolor = t.plot;
-      next.colorway = t.colorway;
-      next.font = Object.assign({{ family: t.fontUi, color: t.text, size: 11 }}, next.font || {{}});
-      next.hoverlabel = Object.assign({{
-        bgcolor: t.activeBg,
-        bordercolor: t.borderStrong,
-        font: {{ family: t.fontUi, color: t.activeText, size: 11 }}
-      }}, next.hoverlabel || {{}});
-      next.legend = Object.assign({{
-        bgcolor: 'rgba(0,0,0,0)',
-        borderwidth: 0,
-        font: {{ family: t.fontUi, color: t.muted, size: 10 }}
-      }}, next.legend || {{}});
-      if (typeof next.title === 'string') {{
-        next.title = {{ text: next.title, font: {{ family: t.fontDisplay, size: 15, color: t.text }}, x: 0.02, xanchor: 'left' }};
-      }} else if (next.title && typeof next.title === 'object') {{
-        next.title = Object.assign({{}}, next.title);
-        next.title.font = Object.assign({{ family: t.fontDisplay, size: 15, color: t.text }}, next.title.font || {{}});
-        if (next.title.x === undefined) {{
-          next.title.x = 0.02;
-          next.title.xanchor = 'left';
-        }}
-      }}
-      const axisDefaults = {{
-        color: t.muted,
-        gridcolor: t.border,
-        linecolor: t.border,
-        zerolinecolor: t.border,
-        tickfont: {{ color: t.muted, family: t.fontUi, size: 10 }},
-        titlefont: {{ color: t.muted, family: t.fontUi, size: 11 }}
-      }};
-      ['xaxis', 'yaxis', 'xaxis2', 'yaxis2'].forEach(axis => {{
-        if (next[axis] || axis === 'xaxis' || axis === 'yaxis') {{
-          const current = next[axis] || {{}};
-          const merged = Object.assign({{}}, axisDefaults, current);
-          if (current.titlefont) merged.titlefont = Object.assign({{}}, axisDefaults.titlefont, current.titlefont);
-          if (current.tickfont) merged.tickfont = Object.assign({{}}, axisDefaults.tickfont, current.tickfont);
-          next[axis] = merged;
-        }}
-      }});
-      next.margin = Object.assign({{ l: 52, r: 18, t: 52, b: 42 }}, next.margin || {{}});
-      return next;
-    }}
-
-    function plotlyThemeRelayout() {{
-      const t = readPlotlyTheme();
-      return {{
-        'plot_bgcolor': t.plot,
-        'paper_bgcolor': t.paper,
-        'font.color': t.text,
-        'font.family': t.fontUi,
-        'xaxis.color': t.muted,
-        'xaxis.gridcolor': t.border,
-        'xaxis.linecolor': t.border,
-        'xaxis.zerolinecolor': t.border,
-        'yaxis.color': t.muted,
-        'yaxis.gridcolor': t.border,
-        'yaxis.linecolor': t.border,
-        'yaxis.zerolinecolor': t.border,
-        'title.font.color': t.text,
-        'title.font.family': t.fontDisplay,
-        'legend.font.color': t.muted,
-        'legend.bgcolor': 'rgba(0,0,0,0)',
-        'colorway': t.colorway
-      }};
-    }}
 
     function traceHasOnlyZeroValues(trace) {{
       if (!trace) {{
@@ -2147,9 +1168,10 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
     }}
 
     const originalPlotlyNewPlot = Plotly.newPlot;
-    Plotly.newPlot = function(div, data, layout, config) {{
-      if (Array.isArray(data)) {{
-        data.forEach(trace => {{
+    Plotly.newPlot = function() {{
+      const dataArg = arguments.length > 1 ? arguments[1] : null;
+      if (Array.isArray(dataArg)) {{
+        dataArg.forEach(trace => {{
           if (!trace || trace.visible !== undefined) {{
             return;
           }}
@@ -2158,9 +1180,7 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
           }}
         }});
       }}
-      layout = applyPlotlyTheme(layout || {{}});
-      config = Object.assign({{ displaylogo: false, responsive: true }}, config || {{}});
-      return originalPlotlyNewPlot.call(this, div, data, layout, config);
+      return originalPlotlyNewPlot.apply(Plotly, arguments);
     }};
 
     // --- MODIFICATION EXPLICITE : PARTIE 1 ---
@@ -2218,60 +1238,35 @@ def generate_html_page(lpar_data_map, top_data_map, frame_map, lpm_data_map, out
       "sea_phy_error_chart",
       "sea_phy_drop_chart",
     ];
-    function applyDarkModeToAllCharts() {{
-      const layoutUpdates = plotlyThemeRelayout();
+    // ========== Darkâ€‘mode relay function ==========
+    function applyDarkModeToAllCharts(isDark) {{
+      const layoutUpdates = isDark
+        ? {{
+            'plot_bgcolor': '#0d1b2a',
+            'paper_bgcolor': '#0d1b2a',
+            'font.color': 'white',
+            'xaxis.color': 'white',
+            'yaxis.color': 'white'
+          }}
+        : {{
+            'plot_bgcolor': null,
+            'paper_bgcolor': null,
+            'font.color': null,
+            'xaxis.color': null,
+            'yaxis.color': null
+          }};
       chartIds.forEach(id => {{
-        const el = document.getElementById(id);
-        if (el && el.data) {{
-          Plotly.relayout(el, layoutUpdates);
-        }}
+        Plotly.relayout(id, layoutUpdates);
       }});
     }}
 
+    // Darkâ€‘mode toggle handler
     const toggle = document.getElementById('modeToggle');
-    const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
-    const THEME_KEY = 'dashboard-theme';
-
-    function readStoredTheme() {{
-      try {{
-        const stored = localStorage.getItem(THEME_KEY);
-        if (stored === 'system' || stored === 'light' || stored === 'dark') return stored;
-      }} catch (e) {{}}
-      return 'light';
-    }}
-
-    function themeIsDark(theme) {{
-      return theme === 'dark' || (theme === 'system' && themeMedia.matches);
-    }}
-
-    function applyTheme(theme) {{
-      const dark = themeIsDark(theme);
-      document.body.classList.toggle('dark-mode', dark);
-      if (!toggle) return;
-      toggle.setAttribute('aria-pressed', dark ? 'true' : 'false');
-      toggle.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
-      toggle.setAttribute('title', dark ? 'Dark' : 'Light');
-    }}
-
-    function persistTheme(theme) {{
-      try {{ localStorage.setItem(THEME_KEY, theme); }} catch (e) {{}}
-      applyTheme(theme);
-    }}
-
-    if (toggle) {{
-      toggle.addEventListener('click', () => {{
-        persistTheme(document.body.classList.contains('dark-mode') ? 'light' : 'dark');
-        renderCharts();
-      }});
-    }}
-
-    if (themeMedia.addEventListener) {{
-      themeMedia.addEventListener('change', () => applyTheme(readStoredTheme()));
-    }} else if (themeMedia.addListener) {{
-      themeMedia.addListener(() => applyTheme(readStoredTheme()));
-    }}
-
-    applyTheme(readStoredTheme());
+    toggle.addEventListener('click', () => {{
+      const isDark = document.body.classList.toggle('dark-mode');
+      toggle.classList.toggle('dark');
+      applyDarkModeToAllCharts(isDark);
+    }});
     
   // remember where we were scrolled, so we can restore on fullscreen exit
      let lastScrollTop = 0;
@@ -2298,7 +1293,7 @@ function setupFullscreen() {{
         containers.forEach(c => c.classList.remove('hidden','fullscreen'));
         chartIds.forEach(id => Plotly.Plots.resize(document.getElementById(id)));
          // restore scroll so this chart stays in view
-        window.scrollTo(0, lastScrollTop);
++        window.scrollTo(0, lastScrollTop);
       }}
     }});
   }});
@@ -2444,19 +1439,16 @@ function setupFullscreen() {{
     }}
 
     function updateChartLayout() {{
-      const cols = parseInt(document.getElementById("chartsPerRow").value, 10) || 3;
-      const container = document.getElementById("chartsContainer");
-      if (container) {{
-        container.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
-      }}
+      const cols = parseInt(document.getElementById("chartsPerRow").value);
+      const chartContainers = document.querySelectorAll(".chart-container");
+      const widthPercent = (100 / cols) + "%";
+      chartContainers.forEach(cc => {{
+        cc.style.width = widthPercent;
+      }});
     }}
 
     function renderCharts() {{
       updateChartLayout();
-      const ctx = document.getElementById('analytics-context');
-      if (ctx) {{
-        ctx.textContent = (frameSelect.value || 'Frame') + ' · ' + (lparSelect.value || 'LPAR');
-      }}
       const docs = getFilteredDocs();
       if (!docs.length) {{
         chartIds.forEach(id => {{
@@ -2473,10 +1465,10 @@ function setupFullscreen() {{
       const idleVals = docs.map(d => d.cpu_all ? d.cpu_all["Idle%"] : null);
       const waitVals = docs.map(d => d.cpu_all ? d.cpu_all["Wait%"] : null);
       Plotly.newPlot('cpu_usage_chart', [
-        {{ x: times, y: userVals, mode: 'lines', name: 'User%', stackgroup: 'one',line: {{ color: themeColor('--chart-1') }} ,connectgaps: false , stackgaps: false}},
-        {{ x: times, y: sysVals,  mode: 'lines', name: 'Sys%',  stackgroup: 'one', line: {{ color: themeColor('--danger') }} ,connectgaps: false , stackgaps: false}},
-        {{ x: times, y: waitVals, mode: 'lines', name: 'Wait%', stackgroup: 'one',line: {{ color: themeColor('--warning') }} ,connectgaps: false , stackgaps: false}},
-        {{ x: times, y: idleVals, mode: 'lines', name: 'Idle%', stackgroup: 'one', line: {{ color: themeColor('--success') }} ,connectgaps: false , stackgaps: false}}
+        {{ x: times, y: userVals, mode: 'lines', name: 'User%', stackgroup: 'one',line: {{ color: '#1f77b4' }} ,connectgaps: false , stackgaps: false}},
+        {{ x: times, y: sysVals,  mode: 'lines', name: 'Sys%',  stackgroup: 'one', line: {{ color: '#d62728' }} ,connectgaps: false , stackgaps: false}},
+        {{ x: times, y: waitVals, mode: 'lines', name: 'Wait%', stackgroup: 'one',line: {{ color: '#ff7f0e' }} ,connectgaps: false , stackgaps: false}},
+        {{ x: times, y: idleVals, mode: 'lines', name: 'Idle%', stackgroup: 'one', line: {{ color: '#2ca02c' }} ,connectgaps: false , stackgaps: false}}
       ], {{
         title: 'CPU Usage (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time', range: xRange }},
@@ -2561,7 +1553,7 @@ function setupFullscreen() {{
       const poolIdleVals = docs.map(d => d.lpar ? d.lpar["PoolIdle"] : null);
       Plotly.newPlot('pool_usage_chart', [
         {{ x: times, y: poolCPUsVals, mode: 'lines', fill: 'tozeroy', fillcolor: 'rgba(0, 123, 255, 0.1)',name: 'PoolCPUs' , connectgaps: false }},
-        {{ x: times, y: poolIdleVals, mode: 'lines', fill: 'tozeroy',line: {{ color: themeColor('--success') }},fillcolor: themeRgba('--success', 0.45),name: 'PoolIdle' , connectgaps: false }}
+        {{ x: times, y: poolIdleVals, mode: 'lines', fill: 'tozeroy',line: {{ color: 'rgb(44, 160, 44)' }},fillcolor: 'rgba(44, 160, 44, 0.5)',name: 'PoolIdle' , connectgaps: false }}
       ], {{
         title: {{ text: `Pool CPUs & Pool Idle (${{lparSelect.value}})<br><span style="font-size:12px">PoolIdle=0 --> allow_perf_collection = 0</span>`, x: 0.5, xanchor:'center'}},
         xaxis: {{ title: 'Time', range: xRange }},
@@ -2936,10 +1928,10 @@ function setupFullscreen() {{
       const memProcess = docs.map(d => d.memnew ? d.memnew["Process%"] : null);
       const memFree = docs.map(d => d.memnew ? d.memnew["Free%"] : null);
       Plotly.newPlot('memnew_chart', [
-        {{ x: times, y: memProcess, mode: 'lines', name: 'Process%', stackgroup: 'one', line: {{ color: themeColor('--chart-1') }} , connectgaps: false }},
-        {{ x: times, y: memFScache, mode: 'lines', name: 'FScache%', stackgroup: 'one', line: {{ color: themeColor('--danger') }} , connectgaps: false}},
-        {{ x: times, y: memSystem, mode: 'lines', name: 'System%',  stackgroup: 'one', line: {{ color: themeColor('--warning') }} , connectgaps: false}},
-        {{ x: times, y: memFree,    mode: 'lines', name: 'Free%',    stackgroup: 'one', line: {{ color: themeColor('--success') }} , connectgaps: false }}
+        {{ x: times, y: memProcess, mode: 'lines', name: 'Process%', stackgroup: 'one', line: {{ color: '#1f77b4' }} , connectgaps: false }},
+        {{ x: times, y: memFScache, mode: 'lines', name: 'FScache%', stackgroup: 'one', line: {{ color: '#d62728' }} , connectgaps: false}},
+        {{ x: times, y: memSystem, mode: 'lines', name: 'System%',  stackgroup: 'one', line: {{ color: '#ff7f0e' }} , connectgaps: false}},
+        {{ x: times, y: memFree,    mode: 'lines', name: 'Free%',    stackgroup: 'one', line: {{ color: '#2ca02c' }} , connectgaps: false }}
       ], {{
         title: 'Memory Usage (MEMNEW) (' + lparSelect.value + ')',
         xaxis: {{ title: 'Time' }},
@@ -3391,13 +2383,13 @@ function setupFullscreen() {{
       }});
       Plotly.newPlot('fc_summary_chart', [
         {{ x: fcIfaces, y: meanRead,  type:'bar', name:'Mean Read',
-           marker:{{color:themeColor('--chart-1')}}, offsetgroup:'meanFC', legendgroup:'meanFC' }},
+           marker:{{color:'#1f77b4'}}, offsetgroup:'meanFC', legendgroup:'meanFC' }},
         {{ x: fcIfaces, y: meanWrite, type:'bar', name:'Mean Write',
-           marker:{{color:themeColor('--success')}}, offsetgroup:'meanFC', legendgroup:'meanFC', base:0 }},
+           marker:{{color:'#2ca02c'}}, offsetgroup:'meanFC', legendgroup:'meanFC', base:0 }},
         {{ x: fcIfaces, y: maxRead,   type:'bar', name:'Max Read',
-           marker:{{color:themeColor('--warning')}}, offsetgroup:'maxFC', legendgroup:'maxFC' }},
+           marker:{{color:'#ff7f0e'}}, offsetgroup:'maxFC', legendgroup:'maxFC' }},
         {{ x: fcIfaces, y: maxWrite,  type:'bar', name:'Max Write',
-           marker:{{color:themeColor('--danger')}}, offsetgroup:'maxFC', legendgroup:'maxFC', base:0 }}
+           marker:{{color:'#d62728'}}, offsetgroup:'maxFC', legendgroup:'maxFC', base:0 }}
       ], {{
         title: 'Fibre Channel Read/Write Summary (' + lparSelect.value + ')',
         barmode: 'group',
@@ -3584,12 +2576,7 @@ function setupFullscreen() {{
 
         const sanLineTraces = [];
         const sanStackedTraces = [];
-        const colorPalette = [
-          themeColor('--chart-1'), themeColor('--chart-2'), themeColor('--chart-3'),
-          themeColor('--chart-4'), themeColor('--chart-5'), themeColor('--chart-6'),
-          themeColor('--chart-7'), themeColor('--chart-8'), themeColor('--chart-inspected'),
-          themeColor('--chart-transferred')
-        ];
+        const colorPalette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'];
         const hexToRgba = (hex, alpha) => {{
           let normalized = hex.replace('#', '');
           if (normalized.length === 3) {{
@@ -4033,10 +3020,10 @@ if (!lpmDocs.length) {{
   const yCategoryLabels = [...new Set(lpmDocs.map(d => `${{d.old_serial}} -> ${{d.current_serial}}`))];
 
   const traces = {{
-    check: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'check', marker: {{ color: themeColor('--chart-insp-count') }} }},
-    pre: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'pre', marker: {{ color: themeColor('--warning'), line: {{ color: themeColor('--text'), width: 1 }} }} }},
-    post: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'post', marker: {{ color: themeColor('--success') }} }},
-    posterror: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'posterror', marker: {{ color: themeColor('--danger') }} }}
+    check: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'check', marker: {{ color: 'blue' }} }},
+    pre: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'pre', marker: {{ color: 'yellow', line: {{ color: 'black', width: 1 }} }} }},
+    post: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'post', marker: {{ color: 'green' }} }},
+    posterror: {{ x: [], y: [], mode: 'markers', type: 'scatter', name: 'posterror', marker: {{ color: 'red' }} }}
   }};
 
   lpmDocs.forEach(d => {{
@@ -4130,13 +3117,13 @@ if (!lpmDocs.length) {{
       }});
       Plotly.newPlot('sea_summary_chart', [
           {{ x: seaIfaces, y: seaMeanRead,  type:'bar', name:'Mean Read',
-             marker:{{color:themeColor('--chart-1')}}, offsetgroup:'meanSEA', legendgroup:'meanSEA' }},
+             marker:{{color:'#1f77b4'}}, offsetgroup:'meanSEA', legendgroup:'meanSEA' }},
           {{ x: seaIfaces, y: seaMeanWrite, type:'bar', name:'Mean Write',
-             marker:{{color:themeColor('--success')}}, offsetgroup:'meanSEA', legendgroup:'meanSEA', base:0 }},
+             marker:{{color:'#2ca02c'}}, offsetgroup:'meanSEA', legendgroup:'meanSEA', base:0 }},
           {{ x: seaIfaces, y: seaMaxRead,   type:'bar', name:'Max Read',
-             marker:{{color:themeColor('--warning')}}, offsetgroup:'maxSEA', legendgroup:'maxSEA' }},
+             marker:{{color:'#ff7f0e'}}, offsetgroup:'maxSEA', legendgroup:'maxSEA' }},
           {{ x: seaIfaces, y: seaMaxWrite,  type:'bar', name:'Max Write',
-             marker:{{color:themeColor('--danger')}}, offsetgroup:'maxSEA', legendgroup:'maxSEA', base:0 }}
+             marker:{{color:'#d62728'}}, offsetgroup:'maxSEA', legendgroup:'maxSEA', base:0 }}
       ], {{
           title: 'SEA Read/Write Summary (' + lparSelect.value + ')',
           barmode: 'group',
@@ -4291,13 +3278,13 @@ if (!lpmDocs.length) {{
       }});
       Plotly.newPlot('sea_phy_summary_chart', [
         {{ x: seaphyIfaces, y: seaphyMeanRead, type:'bar', name:'Mean Read',
-          marker:{{color:themeColor('--chart-1')}}, offsetgroup:'meanSP', legendgroup:'meanSP' }},
+          marker:{{color:'#1f77b4'}}, offsetgroup:'meanSP', legendgroup:'meanSP' }},
         {{ x: seaphyIfaces, y: seaphyMeanWrite, type:'bar', name:'Mean Write',
-          marker:{{color:themeColor('--success')}}, offsetgroup:'meanSP', legendgroup:'meanSP', base:0 }},
+          marker:{{color:'#2ca02c'}}, offsetgroup:'meanSP', legendgroup:'meanSP', base:0 }},
         {{ x: seaphyIfaces, y: seaphyMaxRead, type:'bar', name:'Max Read',
-          marker:{{color:themeColor('--warning')}}, offsetgroup:'maxSP', legendgroup:'maxSP' }},
+          marker:{{color:'#ff7f0e'}}, offsetgroup:'maxSP', legendgroup:'maxSP' }},
         {{ x: seaphyIfaces, y: seaphyMaxWrite, type:'bar', name:'Max Write',
-          marker:{{color:themeColor('--danger')}}, offsetgroup:'maxSP', legendgroup:'maxSP', base:0 }}
+          marker:{{color:'#d62728'}}, offsetgroup:'maxSP', legendgroup:'maxSP', base:0 }}
       ], {{
         title: 'SEAPHY Read/Write Summary (' + lparSelect.value + ')',
         barmode: 'group',
@@ -4350,7 +3337,9 @@ if (!lpmDocs.length) {{
       }}).then(gd => linkCharts('sea_phy_drop_chart'));
 
       
-       applyDarkModeToAllCharts();
+       if (document.body.classList.contains('dark-mode')) {{
+      applyDarkModeToAllCharts(true);
+    }}
     }}
 
     function applyFilter() {{
@@ -4367,6 +3356,7 @@ if (!lpmDocs.length) {{
   </script>
 
 <style>
+body.comparison-mode #chartsContainer {{ margin-top: 215px; }}
 .comparison {{ pointer-events:auto !important; }}
 </style>
 <script>
@@ -4380,12 +3370,9 @@ document.addEventListener('DOMContentLoaded', () => {{
   const menuB = menuA.cloneNode(true);
   menuB.id = 'menu_b';
   menuB.querySelectorAll('[id]').forEach(el => el.id += '_b');
-  menuB.querySelectorAll('[for]').forEach(el => {{ if (el.htmlFor) el.htmlFor += '_b'; }});
-  const compareLabel = menuB.querySelector('.chart-filter-label');
-  if (compareLabel) compareLabel.textContent = 'Compare filters';
   menuB.style.display = 'none';
-  menuB.style.position = 'static';
-  menuB.style.top = '';
+  menuB.style.position = 'absolute';
+  menuB.style.top = (menuA.offsetTop + menuA.offsetHeight + 6) + 'px';
   menuA.after(menuB);
 
   /* fill FRAME & LPAR list B */
@@ -4459,9 +3446,6 @@ document.addEventListener('DOMContentLoaded', () => {{
   document.getElementById('compareToggle').addEventListener('click', ()=>{{
       comparisonMode=!comparisonMode;
       document.body.classList.toggle('comparison-mode',comparisonMode);
-      const compareBtn = document.getElementById('compareToggle');
-      compareBtn.classList.toggle('active', comparisonMode);
-      compareBtn.setAttribute('aria-pressed', comparisonMode ? 'true' : 'false');
       menuB.style.display=comparisonMode?'block':'none';
       document.querySelectorAll('.comparison').forEach(e=>e.style.display=comparisonMode?'block':'none');
       if(comparisonMode){{ renderChartsB(); }}
@@ -4474,8 +3458,10 @@ document.addEventListener('DOMContentLoaded', () => {{
 
   /* dark mode observer */
   const obs=new MutationObserver(()=>{{
-    const layout = plotlyThemeRelayout();
-    [...chartIds, ...chartIds.map(i=>i+'_b')].forEach(cid=>{{ const el=document.getElementById(cid); if(el && el.data) Plotly.relayout(el,layout);}});
+    const dark=document.body.classList.contains('dark-mode');
+    const layout=dark?{{ plot_bgcolor:'#0d1b2a', paper_bgcolor:'#0d1b2a', 'font.color':'white','xaxis.color':'white','yaxis.color':'white'}}:
+                      {{ plot_bgcolor:null, paper_bgcolor:null, 'font.color':null,'xaxis.color':null,'yaxis.color':null}};
+    [...chartIds, ...chartIds.map(i=>i+'_b')].forEach(cid=>{{ const el=document.getElementById(cid); if(el) Plotly.relayout(el,layout);}});
   }});
   obs.observe(document.body,{{attributes:true,attributeFilter:['class']}});
 }});
