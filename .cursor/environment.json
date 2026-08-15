@@ -1,0 +1,14 @@
+{
+  "name": "nmon2plotly",
+  "install": "python3 nmon2plot.py --input_dir . --output_dir ./output",
+  "terminals": [
+    {
+      "name": "dashboard-server",
+      "command": "python3 -m http.server 8000 --directory output",
+      "description": "Serves the generated nmon2plotly dashboard (output/index.html) at http://localhost:8000. Regenerate it by rerunning the install command."
+    }
+  ],
+  "ports": [
+    { "name": "dashboard", "port": 8000 }
+  ]
+}

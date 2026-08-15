@@ -1,0 +1,6 @@
+# Generated dashboard output
+output/
+
+# Python
+__pycache__/
+*.pyc
